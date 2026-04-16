@@ -2,23 +2,18 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { safeFetch, getStoredUser, handleLogoutLocal } from "../services/api";
+import { safeFetch, getStoredUser } from "../services/api";
 import { Product, CartItem, User, Review } from "../types";
 import { supabase } from "../lib/supabase";
+import { useConfirm } from "../components/ConfirmProvider";
 
 export default function Home() {
+  const confirm = useConfirm();
   const [isMounted, setIsMounted] = useState(false);
-  const [isScrolled, setIsScrolled] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isCartOpen, setIsCartOpen] = useState(false);
 
   // Auth
   const [user, setUser] = useState<User | null>(null);
-
-  // Timer
-  const [hours, setHours] = useState(2);
-  const [minutes, setMinutes] = useState(13);
-  const [seconds, setSeconds] = useState(54);
 
   // Data
   const [products, setProducts] = useState<Product[]>([]);
@@ -35,6 +30,10 @@ export default function Home() {
   const [relatedProducts, setRelatedProducts] = useState<Product[]>([]);
   const [productReviews, setProductReviews] = useState<Review[]>([]);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [placingOrder, setPlacingOrder] = useState(false);
+  const [selectedColor, setSelectedColor] = useState('');
+  const [selectedSize, setSelectedSize] = useState('');
+  const [selectedQty, setSelectedQty] = useState(1);
 
   // Review Form State
   const [newReviewText, setNewReviewText] = useState('');
@@ -63,38 +62,7 @@ export default function Home() {
     setIsMounted(true);
     setUser(getStoredUser());
 
-    // Scroll Logic
-    const handleScroll = () => {
-      setIsScrolled(window.scrollY > 50);
-    };
-    window.addEventListener('scroll', handleScroll);
-
-    // Check initial scroll
-    handleScroll();
-
-    // Timer Logic
-    const timer = setInterval(() => {
-      setSeconds((prev) => {
-        if (prev === 0) {
-          setMinutes((m) => {
-            if (m === 0) {
-              setHours((h) => (h === 0 ? 23 : h - 1));
-              return 59;
-            }
-            return m - 1;
-          });
-          return 59;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
     loadInitialData();
-
-    return () => {
-      clearInterval(timer);
-      window.removeEventListener('scroll', handleScroll);
-    };
   }, []);
 
   // Auto-slide effect for trending
@@ -134,26 +102,68 @@ export default function Home() {
     }
   };
 
-  const handleLogout = async () => {
-    handleLogoutLocal();
-    setUser(null);
+  const loadCartData = async () => {
     try {
-      await safeFetch<{ success: boolean }>('/api/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'logout' })
-      });
+      const cartRes = await safeFetch<{ success: boolean; cart_count: number; cart_items: CartItem[]; cart_total: number }>('/api/cart');
+      if (cartRes.success) {
+        setCartCount(cartRes.cart_count || 0);
+        setCartItems(cartRes.cart_items || []);
+        setCartTotal(cartRes.cart_total || 0);
+      }
     } catch (e) {
-      console.warn("Server logout failed", e);
+      console.warn('Error loading cart', e);
     }
   };
 
-  const toggleSidebar = () => setIsSidebarOpen(!isSidebarOpen);
+  const parseOptionList = (raw?: string | string[]) => {
+    if (!raw) return [] as string[];
+    if (Array.isArray(raw)) return raw.map((x) => String(x).trim()).filter(Boolean);
+    return String(raw).split(',').map((x) => x.trim()).filter(Boolean);
+  };
+
+  const confirmAddToCart = async (productId: number, options?: { color?: string; size?: string; quantity?: number }) => {
+    const confirmed = await confirm({
+      title: 'Add To Cart',
+      message: 'Add this item to cart?',
+      confirmText: 'Yes',
+      cancelText: 'No',
+      iconClass: 'fa-solid fa-cart-plus',
+    });
+    if (!confirmed) return;
+
+    try {
+      const res = await safeFetch<{ success: boolean; cart_count?: number; message?: string }>('/api/cart', {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'add',
+          product_id: productId,
+          quantity: options?.quantity || 1,
+          color: options?.color || null,
+          size: options?.size || null,
+        }),
+      });
+
+      if (res.success) {
+        setCartCount(res.cart_count || 0);
+        await loadCartData();
+      } else {
+        window.alert(res.message || 'Unable to add item to cart.');
+      }
+    } catch (e: any) {
+      window.alert(e?.message || 'Error adding item to cart.');
+    }
+  };
+
   const openCart = () => setIsCartOpen(true);
   const closeCart = () => setIsCartOpen(false);
 
   const openProductDetail = async (product: Product) => {
     setSelectedProduct(product);
+    const colors = parseOptionList(product.colors);
+    const sizes = parseOptionList(product.sizes);
+    setSelectedColor(colors[0] || '');
+    setSelectedSize(sizes[0] || '');
+    setSelectedQty(1);
     setLoadingDetails(true);
     setRelatedProducts([]);
     setProductReviews([]);
@@ -177,6 +187,57 @@ export default function Home() {
   };
 
   const closeProductDetail = () => setSelectedProduct(null);
+
+  const removeFromCart = async (cartId: number) => {
+    const confirmed = await confirm({
+      title: 'Remove Item',
+      message: 'Remove this item from cart?',
+      confirmText: 'Yes',
+      cancelText: 'No',
+      iconClass: 'fa-solid fa-trash',
+    });
+    if (!confirmed) return;
+
+    try {
+      await safeFetch('/api/cart', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'remove', cart_id: cartId }),
+      });
+      await loadCartData();
+    } catch (err: any) {
+      window.alert(err?.message || 'Could not remove item from cart');
+    }
+  };
+
+  const placeOrder = async () => {
+    if (cartItems.length === 0) return;
+    const confirmed = await confirm({
+      title: 'Place Order',
+      message: 'Are you sure you want to place this order?',
+      confirmText: 'Place',
+      cancelText: 'Cancel',
+      iconClass: 'fa-solid fa-receipt',
+    });
+    if (!confirmed) return;
+
+    setPlacingOrder(true);
+    try {
+      const result = await safeFetch<{ success: boolean; message?: string }>('/api/orders', {
+        method: 'POST',
+      });
+      if (!result.success) {
+        window.alert(result.message || 'Could not place order');
+        return;
+      }
+      await loadCartData();
+      setIsCartOpen(false);
+      window.alert('Order placed successfully.');
+    } catch (err: any) {
+      window.alert(err?.message || 'Failed to place order');
+    } finally {
+      setPlacingOrder(false);
+    }
+  };
 
   const submitReview = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -261,81 +322,6 @@ export default function Home() {
         </div>
       </div>
 
-      <header className={`main-header ${isScrolled ? 'scrolled-bg' : ''}`} id="main-header">
-        <div className="header-container">
-          <div className="menu-icon" id="hamburger" onClick={toggleSidebar}>
-            <i className="fa-solid fa-bars"></i>
-          </div>
-          <div className="logo">
-            <h1>SHOP<span>CORNER</span></h1>
-            <p>RWANDA</p>
-          </div>
-          <div className="header-icons">
-            <div className={`search-container ${isSearchOpen ? 'active' : ''}`} id="search-container">
-              <i className="fa-solid fa-magnifying-glass search-toggle" id="search-toggle" onClick={() => setIsSearchOpen(!isSearchOpen)}></i>
-              <div className="search-dropdown">
-                <input type="text" id="search-input" placeholder="Search products..." />
-                <div id="search-results"></div>
-              </div>
-            </div>
-            <Link href="/favorites" className="header-action">
-              <i className="fa-regular fa-heart"></i>
-            </Link>
-            <div className="cart-icon" onClick={openCart}>
-              <i className="fa-solid fa-bag-shopping"></i>
-              {cartCount > 0 && <span id="cart-count" className="cart-count">{cartCount}</span>}
-            </div>
-          </div>
-        </div>
-
-        {isSidebarOpen && (
-          <div id="sidebar-overlay" className="sidebar-overlay active" onClick={toggleSidebar}></div>
-        )}
-
-        <nav id="side-menu" className={`side-menu ${isSidebarOpen ? 'active' : ''}`}>
-          <div className="side-menu-header">
-            <div id="sidebar-user-section" className="user-profile-section">
-              <div className="side-avatar" id="side-avatar">{user?.full_name?.charAt(0).toUpperCase() || user?.email?.charAt(0).toUpperCase() || 'U'}</div>
-              <span className="user-name" id="side-user-name">{user?.full_name || 'My Account'}</span>
-            </div>
-            <button className="close-side" onClick={toggleSidebar}>
-              <i className="fa-solid fa-xmark"></i>
-            </button>
-          </div>
-          <div className="side-menu-body">
-            <ul className="side-nav-list">
-              <li><Link href="/">Home</Link></li>
-              <li><a href="#">Trend</a></li>
-              <li><Link href="/contact">Contact</Link></li>
-              <li><Link href="/help">Help</Link></li>
-              <li className="separator"></li>
-              {user ? (
-                <>
-                  <li><Link href="/profile" id="profile-link">Profile</Link></li>
-                  <li><a href="#" onClick={(e) => { e.preventDefault(); handleLogout(); }} className="logout-text" id="logout-link">Logout</a></li>
-                </>
-              ) : (
-                <li><Link href="/login" id="login-link">Login</Link></li>
-              )}
-            </ul>
-          </div>
-        </nav>
-      </header>
-
-      <section className={`deals-bar ${isScrolled ? 'scrolled-bg' : ''}`} id="deals-bar">
-        <div className="deals-content">
-          <span className="deals-title">Super Deals</span>
-          <div className="timer" id="timer">
-            {hours.toString().padStart(2, '0')} : {minutes.toString().padStart(2, '0')} : {seconds.toString().padStart(2, '0')}
-          </div>
-          <a href="#" className="view-all">View All &gt;</a>
-        </div>
-      </section>
-
-      <div className={`shipping-notice ${isScrolled ? 'scrolled-bg' : ''}`} id="shipping-notice">
-        <i className="fa-solid fa-truck"></i> Free Shipping <span>Buy RWF20000 more to get</span>
-      </div>
-
       <main className="product-grid slideshow-visible" id="product-grid">
         {loadingProducts ? (
           <div className="loading">Loading products...</div>
@@ -345,7 +331,22 @@ export default function Home() {
               <div className="product-image">
                 <img src={product.image || 'https://picsum.photos/seed/default/300/400'} alt={product.name} className="carousel-image active" />
                 {product.badge && <span className="product-badge">{product.badge}</span>}
-                <button className="add-to-cart-btn" title="Quick add to cart" onClick={(e) => { e.stopPropagation(); /* Add to cart logic */ }}><i className="fa-solid fa-plus"></i></button>
+                <button
+                  className="add-to-cart-btn"
+                  title="Quick add to cart"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const colors = parseOptionList(product.colors);
+                    const sizes = parseOptionList(product.sizes);
+                    confirmAddToCart(Number(product.id), {
+                      color: colors[0],
+                      size: sizes[0],
+                      quantity: 1,
+                    });
+                  }}
+                >
+                  <i className="fa-solid fa-plus"></i>
+                </button>
               </div>
               <div className="product-info">
                 <p className="title">{product.name}</p>
@@ -382,7 +383,9 @@ export default function Home() {
                       <p className="cart-item-price">RWF{Number(item.price).toFixed(2)}</p>
                       <p className="cart-item-quantity">Qty: {item.quantity}</p>
                     </div>
-                    <button className="remove-from-cart" title="Remove"><i className="fa-solid fa-trash"></i></button>
+                    <button className="remove-from-cart" title="Remove" onClick={() => removeFromCart(item.cart_id)}>
+                      <i className="fa-solid fa-trash"></i>
+                    </button>
                   </div>
                 )) : (
                   <div className="empty-cart">Your cart is empty</div>
@@ -393,8 +396,13 @@ export default function Home() {
               <div className="cart-total-display">
                 Total: <span id="cart-total-amount">RWF {cartTotal}</span>
               </div>
-              <button id="place-order-btn" className="checkout-btn" disabled={cartItems.length === 0}>
-                Place Order
+              <button
+                id="place-order-btn"
+                className="checkout-btn"
+                disabled={cartItems.length === 0 || placingOrder}
+                onClick={placeOrder}
+              >
+                {placingOrder ? 'Placing...' : 'Place Order'}
               </button>
             </div>
           </div>
@@ -436,7 +444,65 @@ export default function Home() {
                     {selectedProduct.category && <span>Category: {selectedProduct.category}</span>}
                     <span>Sold: {selectedProduct.sold || 0}+</span>
                   </div>
-                  <button className="detail-add-to-cart">
+
+                  {parseOptionList(selectedProduct.colors).length > 0 && (
+                    <div className="option-group">
+                      <span>Color</span>
+                      <div className="color-options">
+                        {parseOptionList(selectedProduct.colors).map((color) => (
+                          <button
+                            key={color}
+                            type="button"
+                            className={`color-item ${selectedColor === color ? 'active' : ''}`}
+                            onClick={() => setSelectedColor(color)}
+                          >
+                            {color}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {parseOptionList(selectedProduct.sizes).length > 0 && (
+                    <div className="option-group">
+                      <span>Size</span>
+                      <div className="size-options">
+                        {parseOptionList(selectedProduct.sizes).map((size) => (
+                          <button
+                            key={size}
+                            type="button"
+                            className={`size-item ${selectedSize === size ? 'active' : ''}`}
+                            onClick={() => setSelectedSize(size)}
+                          >
+                            {size}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="option-group">
+                    <span>Quantity</span>
+                    <input
+                      className="qty-input"
+                      type="number"
+                      min={1}
+                      max={Math.max(1, Number(selectedProduct.stock || 99))}
+                      value={selectedQty}
+                      onChange={(e) => setSelectedQty(Math.max(1, Number(e.target.value || 1)))}
+                    />
+                  </div>
+
+                  <button
+                    className="detail-add-to-cart"
+                    onClick={() =>
+                      confirmAddToCart(Number(selectedProduct.id), {
+                        color: selectedColor || undefined,
+                        size: selectedSize || undefined,
+                        quantity: selectedQty || 1,
+                      })
+                    }
+                  >
                     <i className="fa-solid fa-cart-plus"></i> Add to Cart
                   </button>
 
@@ -486,12 +552,12 @@ export default function Home() {
               {relatedProducts.length > 0 && (
                 <div style={{ marginTop: '20px', borderTop: '1px solid #eee', paddingTop: '20px' }}>
                   <h3 style={{ marginBottom: '15px' }}>You Might Also Like</h3>
-                  <div style={{ display: 'flex', gap: '15px', overflowX: 'auto', paddingBottom: '10px' }}>
+                  <div className="related-products-grid">
                     {relatedProducts.map(rp => (
-                      <div key={rp.id} onClick={() => openProductDetail(rp)} style={{ minWidth: '150px', cursor: 'pointer', border: '1px solid #eee', borderRadius: '8px', padding: '10px' }}>
-                        <img src={rp.image || 'https://picsum.photos/seed/default/150/150'} alt={rp.name} style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '4px' }} />
-                        <p style={{ fontSize: '12px', fontWeight: 'bold', marginTop: '8px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{rp.name}</p>
-                        <p style={{ color: '#d66d67', fontSize: '12px', fontWeight: 'bold' }}>RWF{Number(rp.price).toFixed(2)}</p>
+                      <div key={rp.id} onClick={() => openProductDetail(rp)} className="related-product-card">
+                        <img src={rp.image || 'https://picsum.photos/seed/default/150/150'} alt={rp.name} />
+                        <p>{rp.name}</p>
+                        <strong>RWF{Number(rp.price).toFixed(2)}</strong>
                       </div>
                     ))}
                   </div>

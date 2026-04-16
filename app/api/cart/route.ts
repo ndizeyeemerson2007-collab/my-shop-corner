@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '../../../lib/supabase';
+import { createClient } from '@supabase/supabase-js';
+
+// Create a service role client for admin operations
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+  process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+);
 
 // Helper to get session id
 function getSessionId(req: NextRequest) {
@@ -12,7 +18,7 @@ export async function GET(request: NextRequest) {
 
     // Fetch cart items belonging to this session
     // We join the products table to get the product details
-    const { data: cartData, error } = await supabase
+    const { data: cartData, error } = await supabaseAdmin
       .from('cart')
       .select('*, products(name, price, image)')
       .eq('session_id', sessionId);
@@ -64,7 +70,7 @@ export async function POST(request: NextRequest) {
 
     if (action === 'add') {
       // Check if product already in cart
-      const { data: existing } = await supabase
+      const { data: existing } = await supabaseAdmin
         .from('cart')
         .select('*')
         .eq('session_id', sessionId)
@@ -75,7 +81,7 @@ export async function POST(request: NextRequest) {
 
       if (existing) {
         // Update quantity
-        const { error } = await supabase
+        const { error } = await supabaseAdmin
           .from('cart')
           .update({ quantity: (existing.quantity || 1) + (quantity || 1) })
           .eq('id', existing.id);
@@ -83,7 +89,7 @@ export async function POST(request: NextRequest) {
         if (error) throw error;
       } else {
         // Insert new cart item
-        const { error } = await supabase
+        const { error } = await supabaseAdmin
           .from('cart')
           .insert({
             session_id: sessionId,
@@ -98,7 +104,7 @@ export async function POST(request: NextRequest) {
     } else if (action === 'remove') {
       // Remove from cart
       if (cart_id) {
-        const { error } = await supabase
+        const { error } = await supabaseAdmin
           .from('cart')
           .delete()
           .eq('id', cart_id)
@@ -109,7 +115,7 @@ export async function POST(request: NextRequest) {
     }
 
     // After mutation, fetch the new count to return
-    const { data: currentCart } = await supabase
+    const { data: currentCart } = await supabaseAdmin
       .from('cart')
       .select('quantity')
       .eq('session_id', sessionId);

@@ -1,5 +1,5 @@
 const API_BASE = '/api/';
-const LOCAL_AUTH_TOKEN = 'shopcorner_token';
+const LOCAL_AUTH_SESSION = 'supabase_session';
 const LOCAL_USER_INFO = 'shopcorner_user';
 
 function getSessionId(): string {
@@ -14,15 +14,29 @@ function getSessionId(): string {
 
 function getAuthHeaders(): HeadersInit {
   if (typeof window === 'undefined') return {};
-  const token = localStorage.getItem(LOCAL_AUTH_TOKEN) || '';
+  
+  // Try to get Supabase session
+  let accessToken = '';
+  try {
+    const sessionStr = localStorage.getItem(LOCAL_AUTH_SESSION);
+    if (sessionStr) {
+      const session = JSON.parse(sessionStr);
+      accessToken = session.access_token || '';
+    }
+  } catch (err) {
+    console.error('Error parsing session:', err);
+  }
+
   const headers: Record<string, string> = {
     'X-Requested-With': 'XMLHttpRequest',
     'X-Session-Id': getSessionId(),
     'Content-Type': 'application/json'
   };
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
   }
+
   return headers;
 }
 
@@ -65,6 +79,66 @@ export function getStoredUser() {
 
 export function handleLogoutLocal() {
   if (typeof window === 'undefined') return;
-  localStorage.removeItem(LOCAL_AUTH_TOKEN);
+  localStorage.removeItem(LOCAL_AUTH_SESSION);
   localStorage.removeItem(LOCAL_USER_INFO);
+}
+
+export async function login(email: string, password: string) {
+  const response = await safeFetch<{ success: boolean; session?: any; user?: any; redirect?: string; message?: string }>('/auth', {
+    method: 'POST',
+    body: JSON.stringify({ email, password, mode: 'login' }),
+  });
+  if (response.success && response.session && response.user) {
+    localStorage.setItem(LOCAL_AUTH_SESSION, JSON.stringify(response.session));
+    localStorage.setItem(LOCAL_USER_INFO, JSON.stringify(response.user));
+    return { success: true, redirect: response.redirect };
+  }
+  return { success: false, message: response.message };
+}
+
+export async function signup(email: string, password: string, full_name: string, phone: string, address: string) {
+  const response = await safeFetch<{ success: boolean; session?: any; user?: any; redirect?: string; message?: string }>('/auth', {
+    method: 'POST',
+    body: JSON.stringify({ email, password, full_name, phone, address, mode: 'signup' }),
+  });
+  if (response.success && response.session && response.user) {
+    localStorage.setItem(LOCAL_AUTH_SESSION, JSON.stringify(response.session));
+    localStorage.setItem(LOCAL_USER_INFO, JSON.stringify(response.user));
+    return { success: true, redirect: response.redirect };
+  }
+  return { success: false, message: response.message };
+}
+
+export async function logout() {
+  await safeFetch('/auth', {
+    method: 'POST',
+    body: JSON.stringify({ mode: 'logout' }),
+  });
+  handleLogoutLocal();
+}
+
+/**
+ * Fetch the current user from the server
+ * Always gets fresh data from the database and validates session
+ * Returns null if user was deleted or session is invalid
+ */
+export async function getCurrentUserFromServer() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const result = await safeFetch<{ success: boolean; isLoggedIn: boolean; user?: any }>('/auth');
+    if (result.success && result.isLoggedIn && result.user) {
+      // Update localStorage with fresh data
+      localStorage.setItem(LOCAL_USER_INFO, JSON.stringify(result.user));
+      return result.user;
+    } else {
+      // User not logged in or deleted - clear localStorage
+      console.warn('User not logged in or was deleted from database');
+      handleLogoutLocal();
+      return null;
+    }
+  } catch (err) {
+    console.error('Error fetching current user:', err);
+    handleLogoutLocal();
+    return null;
+  }
 }

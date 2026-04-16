@@ -1,12 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '../../../lib/supabase';
+import { createClient } from '@supabase/supabase-js';
+
+// Create a service role client for admin operations
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+  process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+);
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const productId = searchParams.get('product_id');
 
-    let query = supabase.from('reviews').select('*').order('created_at', { ascending: false });
+    let query = supabaseAdmin.from('reviews').select('*').order('created_at', { ascending: false });
 
     if (productId) {
       query = query.eq('product_id', productId);
@@ -34,7 +40,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, message: 'Missing required fields' }, { status: 400 });
     }
 
-    const { data: newReview, error } = await supabase
+    const { data: newReview, error } = await supabaseAdmin
       .from('reviews')
       .insert({ product_id, user_name, rating, comment })
       .select()
