@@ -84,7 +84,12 @@ export default function LoginPage() {
         // Dispatch custom event to update Header
         window.dispatchEvent(new CustomEvent('userLogin'));
         // Redirect
-        router.push(data.redirect || '/profile');
+        const shouldOpenCartAfterLogin = localStorage.getItem('shopcorner_open_cart_after_login') === '1';
+        if (shouldOpenCartAfterLogin) {
+          router.push('/');
+        } else {
+          router.push(data.redirect || '/profile');
+        }
       } else {
         localStorage.removeItem('supabase_session');
         localStorage.removeItem('shopcorner_user');

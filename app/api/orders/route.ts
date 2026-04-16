@@ -7,6 +7,24 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 );
 
+function normalizeDatabaseError(message: string | undefined) {
+  if (!message) return 'Internal Server Error';
+
+  if (message.includes('invalid input syntax for type integer')) {
+    return 'Database schema mismatch: orders.user_id is still integer in Supabase, but the app uses UUID auth users. Run db/fix-orders-schema.sql in Supabase SQL Editor.';
+  }
+
+  if (message.includes('null value in column "session_id" of relation "orders" violates not-null constraint')) {
+    return 'Database schema mismatch: the live orders table still requires session_id. The app now sends it too, but you should still run db/fix-orders-schema.sql in Supabase SQL Editor to align the schema.';
+  }
+
+  if (message.includes("Could not find the 'full_name' column of 'orders'")) {
+    return 'Database schema mismatch: the live orders table is outdated. Run db/fix-orders-schema.sql in Supabase SQL Editor.';
+  }
+
+  return message;
+}
+
 function getSessionId(req: NextRequest) {
   return req.headers.get('X-Session-Id') || 'anonymous_session';
 }
@@ -37,6 +55,11 @@ async function requireUser(request: NextRequest) {
   };
 }
 
+function canUserCancelOrder(status: string | null | undefined) {
+  const normalized = String(status || '').toLowerCase();
+  return normalized === 'pending' || normalized === 'paid';
+}
+
 export async function GET(request: NextRequest) {
   try {
     const auth = await requireUser(request);
@@ -44,13 +67,22 @@ export async function GET(request: NextRequest) {
 
     const { data: orders, error } = await supabaseAdmin
       .from('orders')
-      .select('*')
+      .select(`
+        *,
+        users:user_id (
+          id,
+          email,
+          full_name,
+          phone,
+          address
+        )
+      `)
       .eq('user_id', auth.user.id)
       .order('created_at', { ascending: false })
       .limit(50);
 
     if (error) {
-      return NextResponse.json({ success: false, message: error.message }, { status: 500 });
+      return NextResponse.json({ success: false, message: normalizeDatabaseError(error.message) }, { status: 500 });
     }
 
     const orderIds = (orders || []).map((o: any) => o.id);
@@ -79,6 +111,7 @@ export async function GET(request: NextRequest) {
 
     const hydratedOrders = (orders || []).map((order: any) => ({
       ...order,
+      customer: order.users || null,
       items: itemsByOrder[String(order.id)] || [],
     }));
 
@@ -118,17 +151,15 @@ export async function POST(request: NextRequest) {
       .from('orders')
       .insert([{
         user_id: auth.user.id,
+        session_id: sessionId,
         status: 'pending',
         total_amount: totalAmount,
-        full_name: auth.profile?.full_name || auth.user.email || 'Customer',
-        phone: auth.profile?.phone || null,
-        location: auth.profile?.address || null,
       }])
       .select('*')
       .single();
 
     if (orderError || !newOrder) {
-      return NextResponse.json({ success: false, message: orderError?.message || 'Could not create order' }, { status: 500 });
+      return NextResponse.json({ success: false, message: normalizeDatabaseError(orderError?.message) || 'Could not create order' }, { status: 500 });
     }
 
     const orderItemsPayload = cartItems.map((item: any) => ({
@@ -147,7 +178,7 @@ export async function POST(request: NextRequest) {
 
     if (orderItemsError) {
       await supabaseAdmin.from('orders').delete().eq('id', newOrder.id);
-      return NextResponse.json({ success: false, message: orderItemsError.message }, { status: 500 });
+      return NextResponse.json({ success: false, message: normalizeDatabaseError(orderItemsError.message) }, { status: 500 });
     }
 
     for (const item of cartItems) {
@@ -167,6 +198,56 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, order: newOrder });
   } catch (error: any) {
-    return NextResponse.json({ success: false, message: error.message || 'Internal Server Error' }, { status: 500 });
+    return NextResponse.json({ success: false, message: normalizeDatabaseError(error.message) }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const auth = await requireUser(request);
+    if (!auth.ok) return auth.response;
+
+    const body = await request.json();
+    const orderId = Number(body.order_id);
+    const action = String(body.action || '').toLowerCase();
+
+    if (!orderId || action !== 'cancel') {
+      return NextResponse.json({ success: false, message: 'Invalid order update payload' }, { status: 400 });
+    }
+
+    const { data: existingOrder, error: existingError } = await supabaseAdmin
+      .from('orders')
+      .select('id, status, user_id')
+      .eq('id', orderId)
+      .eq('user_id', auth.user.id)
+      .maybeSingle();
+
+    if (existingError) {
+      return NextResponse.json({ success: false, message: normalizeDatabaseError(existingError.message) }, { status: 500 });
+    }
+
+    if (!existingOrder) {
+      return NextResponse.json({ success: false, message: 'Order not found' }, { status: 404 });
+    }
+
+    if (!canUserCancelOrder(existingOrder.status)) {
+      return NextResponse.json({ success: false, message: 'This order can no longer be canceled' }, { status: 400 });
+    }
+
+    const { data: updatedOrder, error: updateError } = await supabaseAdmin
+      .from('orders')
+      .update({ status: 'canceled' })
+      .eq('id', orderId)
+      .eq('user_id', auth.user.id)
+      .select('*')
+      .single();
+
+    if (updateError) {
+      return NextResponse.json({ success: false, message: normalizeDatabaseError(updateError.message) }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true, order: updatedOrder });
+  } catch (error: any) {
+    return NextResponse.json({ success: false, message: normalizeDatabaseError(error.message) }, { status: 500 });
   }
 }

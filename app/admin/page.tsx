@@ -29,6 +29,14 @@ type AdminOrder = {
   full_name?: string | null;
   phone?: string | null;
   location?: string | null;
+  customer_email?: string | null;
+  customer?: {
+    id?: string | null;
+    email?: string | null;
+    full_name?: string | null;
+    phone?: string | null;
+    address?: string | null;
+  } | null;
   created_at: string;
   items?: AdminOrderItem[];
 };
@@ -37,11 +45,18 @@ export default function AdminPage() {
   const confirm = useConfirm();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeSection, setActiveSection] = useState<AdminSection>('stats');
+  const [activeSection, setActiveSection] = useState<AdminSection | 'settings'>('stats');
   const [stats, setStats] = useState<AdminStats>({ revenue: 0, orders: 0, products: 0, trend_products: 0 });
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<AdminOrder[]>([]);
+  const [orderListModal, setOrderListModal] = useState<AdminOrder | null>(null);
+  const [customerInfoModal, setCustomerInfoModal] = useState<AdminOrder | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [showProfilePanel, setShowProfilePanel] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [profileForm, setProfileForm] = useState({ full_name: '', phone: '', address: '' });
+  const [profileOriginal, setProfileOriginal] = useState({ full_name: '', phone: '', address: '' });
   const [form, setForm] = useState({
     name: '',
     description: '',
@@ -65,7 +80,14 @@ export default function AdminPage() {
         router.push('/login');
         return;
       }
+      const mappedProfile = {
+        full_name: serverUser.full_name || '',
+        phone: serverUser.phone || '',
+        address: serverUser.address || '',
+      };
       setUser(serverUser);
+      setProfileForm(mappedProfile);
+      setProfileOriginal(mappedProfile);
       await Promise.all([loadDashboardStats(), loadProducts(), loadOrders()]);
       setLoading(false);
     };
@@ -77,7 +99,6 @@ export default function AdminPage() {
       const result = await safeFetch<{ success: boolean; stats?: AdminStats; orders?: any[] }>('/api/admin/dashboard');
       if (result.success && result.stats) {
         setStats(result.stats);
-        setOrders(result.orders || []);
       }
     } catch {
       // keep defaults
@@ -130,9 +151,15 @@ export default function AdminPage() {
 
   const switchSection = async (section: AdminSection) => {
     setActiveSection(section);
+    setShowProfilePanel(false);
     if (section === 'products') await loadProducts();
     if (section === 'orders') await loadOrders();
     if (section === 'stats') await loadDashboardStats();
+  };
+
+  const switchToSettings = () => {
+    setShowProfilePanel(false);
+    setActiveSection('settings');
   };
 
   const handleAddProduct = async (e: React.FormEvent) => {
@@ -175,10 +202,10 @@ export default function AdminPage() {
         await Promise.all([loadProducts(), loadDashboardStats()]);
         setActiveSection('products');
       } else {
-        window.alert(result.message || 'Failed to save product');
+        window.alert(result.message || 'Failed to save product.');
       }
     } catch (err: any) {
-      window.alert(err?.message || 'Network error');
+      window.alert(err?.message || 'Network error.');
     } finally {
       setUploading(false);
     }
@@ -191,12 +218,12 @@ export default function AdminPage() {
         method: 'DELETE',
       });
       if (!result.success) {
-        window.alert(result.message || 'Delete failed');
+        window.alert(result.message || 'Delete failed.');
         return;
       }
       await Promise.all([loadProducts(), loadDashboardStats()]);
     } catch (err: any) {
-      window.alert(err?.message || 'Delete failed');
+      window.alert(err?.message || 'Delete failed.');
     }
   };
 
@@ -207,12 +234,76 @@ export default function AdminPage() {
         body: JSON.stringify({ order_id: orderId, status }),
       });
       if (!result.success) {
-        window.alert(result.message || 'Failed to update order status');
+        window.alert(result.message || 'Failed to update order status.');
         return;
       }
       await Promise.all([loadOrders(), loadDashboardStats()]);
     } catch (err: any) {
-      window.alert(err?.message || 'Failed to update order status');
+      window.alert(err?.message || 'Failed to update order status.');
+    }
+  };
+
+  const estimateDeliveryDistanceKm = (location?: string | null) => {
+    const value = String(location || '').toLowerCase();
+    if (!value) return 0;
+    if (value.includes('nyarugenge')) return 6;
+    if (value.includes('kicukiro')) return 10;
+    if (value.includes('gasabo')) return 12;
+    if (value.includes('remera')) return 8;
+    if (value.includes('kimironko')) return 10;
+    if (value.includes('nyamirambo')) return 7;
+    if (value.includes('gisozi')) return 9;
+    if (value.includes('kacyiru')) return 6;
+    if (value.includes('kigali')) return 6;
+    return 14;
+  };
+
+  const getDeliveryFee = (location?: string | null) => {
+    const distanceKm = estimateDeliveryDistanceKm(location);
+    return Math.ceil(distanceKm / 2) * 200;
+  };
+
+  const getOrderGrandTotal = (order: AdminOrder) => Number(order.total_amount || 0) + getDeliveryFee(order.location);
+
+  const hasProfileChanges =
+    profileForm.full_name !== profileOriginal.full_name ||
+    profileForm.phone !== profileOriginal.phone ||
+    profileForm.address !== profileOriginal.address;
+
+  const handleDiscardProfile = () => {
+    if (!hasProfileChanges) return;
+    if (!window.confirm('Discard unsaved changes?')) return;
+    setProfileForm(profileOriginal);
+  };
+
+  const handleSaveProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingProfile(true);
+    try {
+      const result = await safeFetch<{ success: boolean; user?: User; message?: string }>('/api/profile', {
+        method: 'PATCH',
+        body: JSON.stringify(profileForm),
+      });
+      if (result.success && result.user) {
+        setUser(result.user);
+        const next = {
+          full_name: result.user.full_name || '',
+          phone: result.user.phone || '',
+          address: result.user.address || '',
+        };
+        setProfileForm(next);
+        setProfileOriginal(next);
+        localStorage.setItem('shopcorner_user', JSON.stringify(result.user));
+        window.dispatchEvent(new CustomEvent('userLogin'));
+        window.alert('Profile updated successfully.');
+        setShowProfilePanel(false);
+      } else {
+        window.alert(result.message || 'Failed to update profile.');
+      }
+    } catch (err: any) {
+      window.alert(err?.message || 'Could not save changes.');
+    } finally {
+      setSavingProfile(false);
     }
   };
 
@@ -342,12 +433,12 @@ export default function AdminPage() {
             <div key={o.id} className="admin-card admin-order-card">
               <div className="admin-order-top">
                 <h4>Order #{o.id}</h4>
-                <span>RWF {Number(o.total_amount || 0).toLocaleString()}</span>
+                <span>{String(o.status || 'pending').toUpperCase()}</span>
               </div>
-              <p>Customer: {o.full_name || 'Guest'}</p>
-              <p>Phone: {o.phone || 'N/A'}</p>
-              <p>Location: {o.location || 'N/A'}</p>
               <p>{new Date(o.created_at).toLocaleString()}</p>
+              <p>Products Total: RWF {Number(o.total_amount || 0).toLocaleString()}</p>
+              <p>Delivery Fee: RWF {getDeliveryFee(o.location).toLocaleString()}</p>
+              <p className="admin-order-grand-total">Grand Total: RWF {getOrderGrandTotal(o).toLocaleString()}</p>
               <div className="status-line">
                 <div className="step completed"><div className="step-icon"><i className="fa-solid fa-receipt"></i></div><span>Placed</span></div>
                 <div className={`step ${['paid', 'processing', 'delivered'].includes(String(o.status || '').toLowerCase()) ? 'completed' : ''}`}><div className="step-icon"><i className="fa-solid fa-credit-card"></i></div><span>Paid</span></div>
@@ -355,17 +446,13 @@ export default function AdminPage() {
                 <div className={`step ${String(o.status || '').toLowerCase() === 'delivered' ? 'completed' : ''}`}><div className="step-icon"><i className="fa-solid fa-truck-fast"></i></div><span>Delivered</span></div>
               </div>
 
-              <div className="admin-order-items">
-                {(o.items || []).map((item) => (
-                  <div key={item.id} className="admin-order-item-row">
-                    <strong>{item.product_name}</strong>
-                    <span>
-                      x{item.quantity}
-                      {item.color ? `, ${item.color}` : ''}
-                      {item.size ? `, ${item.size}` : ''}
-                    </span>
-                  </div>
-                ))}
+              <div className="admin-order-actions-row">
+                <button type="button" className="admin-order-action-btn" onClick={() => setOrderListModal(o)}>
+                  Order List
+                </button>
+                <button type="button" className="admin-order-action-btn admin-order-action-btn-secondary" onClick={() => setCustomerInfoModal(o)}>
+                  Customer Info
+                </button>
               </div>
 
               <div className="admin-order-status-select">
@@ -387,21 +474,223 @@ export default function AdminPage() {
         )}
       </section>
 
+      <section className={`admin-sec ${activeSection === 'settings' ? '' : 'admin-hidden'}`}>
+        <div className="settings-top-card admin-card">
+          <div className="settings-profile">
+            <div className="settings-avatar">
+              <span>{(user.full_name?.charAt(0) || user.email?.charAt(0) || 'A').toUpperCase()}</span>
+              <button type="button" className="avatar-edit-btn" onClick={() => setShowProfilePanel(true)}>
+                <i className="fa-solid fa-pen"></i>
+              </button>
+            </div>
+            <div>
+              <p className="settings-welcome-text">Welcome back</p>
+              <h3>{user.full_name || 'Admin'}</h3>
+              <small>{user.email}</small>
+            </div>
+          </div>
+          <button type="button" className="logout-btn" onClick={handleLogout} aria-label="Logout">
+            <i className="fa-solid fa-arrow-right-from-bracket"></i>
+          </button>
+        </div>
+
+        {!showProfilePanel ? (
+          <>
+            <div id="settings-overview" className="settings-overview">
+              <div className="settings-grid">
+                <button type="button" className="settings-tile" onClick={() => setShowProfilePanel(true)}>
+                  <span className="settings-tile-icon"><i className="fa-solid fa-user"></i></span>
+                  <div className="tile-text">
+                    <strong>User Profile</strong>
+                    <small>Update name, phone and address</small>
+                  </div>
+                  <i className="fa-solid fa-chevron-right settings-chevron"></i>
+                </button>
+                <button type="button" className="settings-tile" onClick={() => window.alert('Password change is not wired up here yet.')}>
+                  <span className="settings-tile-icon"><i className="fa-solid fa-lock"></i></span>
+                  <div className="tile-text">
+                    <strong>Change Password</strong>
+                    <small>Keep your admin account secure</small>
+                  </div>
+                  <i className="fa-solid fa-chevron-right settings-chevron"></i>
+                </button>
+                <button type="button" className="settings-tile" onClick={() => window.alert('This section is coming soon.')}>
+                  <span className="settings-tile-icon"><i className="fa-solid fa-circle-question"></i></span>
+                  <div className="tile-text">
+                    <strong>FAQs</strong>
+                    <small>Quick answers and help</small>
+                  </div>
+                  <i className="fa-solid fa-chevron-right settings-chevron"></i>
+                </button>
+                <div className="settings-tile switch-tile">
+                  <div className="switch-tile-row">
+                    <span className="settings-tile-icon"><i className="fa-solid fa-bell"></i></span>
+                    <div className="tile-text">
+                      <strong>Push Notifications</strong>
+                      <small>Receive alerts for new orders</small>
+                    </div>
+                  </div>
+                  <label className="switch-input">
+                    <input type="checkbox" checked={notificationsEnabled} onChange={(e) => setNotificationsEnabled(e.target.checked)} />
+                    <span className="switch-slider"></span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="settings-support-card">
+                <div>
+                  <p>If you have another question, our support team is ready to help.</p>
+                </div>
+                <a href="https://wa.me/250123456789" target="_blank" rel="noreferrer">WhatsApp Us</a>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div id="settings-profile-panel" className="settings-profile-panel">
+            <header>
+              <div>
+                <h4>User Profile</h4>
+                <p>Edit your personal details</p>
+              </div>
+              <button type="button" className="logout-btn" onClick={() => setShowProfilePanel(false)} aria-label="Close">
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </header>
+
+            <form onSubmit={handleSaveProfile}>
+              <label className="adm-label">Full Name</label>
+              <input
+                type="text"
+                className="adm-input"
+                value={profileForm.full_name}
+                onChange={(e) => setProfileForm({ ...profileForm, full_name: e.target.value })}
+                placeholder="Enter full name"
+              />
+
+              <label className="adm-label">Email</label>
+              <input type="email" className="adm-input" value={user.email} readOnly />
+
+              <label className="adm-label">Phone</label>
+              <input
+                type="text"
+                className="adm-input"
+                value={profileForm.phone}
+                onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
+                placeholder="+250..."
+              />
+
+              <label className="adm-label">Address</label>
+              <input
+                type="text"
+                className="adm-input"
+                value={profileForm.address}
+                onChange={(e) => setProfileForm({ ...profileForm, address: e.target.value })}
+                placeholder="Kigali, Rwanda"
+              />
+
+              <div className="settings-form-actions">
+                {hasProfileChanges ? (
+                  <button type="button" className="settings-secondary-btn" onClick={handleDiscardProfile}>
+                    Discard Changes
+                  </button>
+                ) : null}
+                <button type="submit" className="adm-btn" disabled={savingProfile}>
+                  {savingProfile ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+      </section>
+
+      {orderListModal && (
+        <div className="admin-detail-overlay" onClick={() => setOrderListModal(null)}>
+          <div className="admin-detail-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="admin-detail-head">
+              <h3>Order List #{orderListModal.id}</h3>
+              <button type="button" className="admin-detail-close" onClick={() => setOrderListModal(null)}>
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+            <div className="admin-detail-body">
+              {(orderListModal.items || []).length === 0 ? (
+                <p className="admin-detail-empty">No order items found.</p>
+              ) : (
+                (orderListModal.items || []).map((item) => (
+                  <div key={item.id} className="admin-detail-item-card">
+                    <strong>{item.product_name}</strong>
+                    <span>Quantity: {item.quantity}</span>
+                    <span>Color: {item.color || 'Not selected'}</span>
+                    <span>Size: {item.size || 'Not selected'}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {customerInfoModal && (
+        <div className="admin-detail-overlay" onClick={() => setCustomerInfoModal(null)}>
+          <div className="admin-detail-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="admin-detail-head">
+              <h3>Customer Info</h3>
+              <button type="button" className="admin-detail-close" onClick={() => setCustomerInfoModal(null)}>
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+            <div className="admin-detail-body">
+              <div className="admin-detail-info-grid">
+                <div className="admin-detail-info-row">
+                  <span>Customer ID</span>
+                  <strong>{customerInfoModal.customer?.id || 'N/A'}</strong>
+                </div>
+                <div className="admin-detail-info-row">
+                  <span>Full Name</span>
+                  <strong>{customerInfoModal.full_name || customerInfoModal.customer?.full_name || 'N/A'}</strong>
+                </div>
+                <div className="admin-detail-info-row">
+                  <span>Email</span>
+                  <strong>{customerInfoModal.customer_email || customerInfoModal.customer?.email || 'N/A'}</strong>
+                </div>
+                <div className="admin-detail-info-row">
+                  <span>Phone</span>
+                  <strong>{customerInfoModal.phone || customerInfoModal.customer?.phone || 'N/A'}</strong>
+                </div>
+                <div className="admin-detail-info-row">
+                  <span>Address</span>
+                  <strong>{customerInfoModal.location || customerInfoModal.customer?.address || 'N/A'}</strong>
+                </div>
+                <div className="admin-detail-info-row">
+                  <span>Estimated Distance</span>
+                  <strong>{estimateDeliveryDistanceKm(customerInfoModal.location)} km</strong>
+                </div>
+                <div className="admin-detail-info-row">
+                  <span>Delivery Fee</span>
+                  <strong>RWF {getDeliveryFee(customerInfoModal.location).toLocaleString()}</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <nav className="admin-nav">
         <button className={`nav-item ${activeSection === 'stats' ? 'active' : ''}`} onClick={() => switchSection('stats')}>
-          <i className="fa-solid fa-chart-line"></i><span>Stats</span>
+          <i className="fa-solid fa-chart-line"></i><span>Overview</span>
         </button>
         <button className={`nav-item ${activeSection === 'products' ? 'active' : ''}`} onClick={() => switchSection('products')}>
-          <i className="fa-solid fa-box"></i><span>Items</span>
+          <i className="fa-solid fa-box-open"></i><span>Items</span>
         </button>
-        <button className={`nav-item ${activeSection === 'upload' ? 'active' : ''}`} onClick={() => switchSection('upload')}>
-          <i className="fa-solid fa-plus-circle"></i><span>Add</span>
-        </button>
+        <div className="fab-placeholder" aria-hidden="true"></div>
         <button className={`nav-item ${activeSection === 'orders' ? 'active' : ''}`} onClick={() => switchSection('orders')}>
-          <i className="fa-solid fa-truck"></i><span>Orders</span>
+          <i className="fa-solid fa-cart-shopping"></i><span>Orders</span>
         </button>
-        <button className="nav-item" onClick={handleLogout}>
-          <i className="fa-solid fa-right-from-bracket"></i><span>Logout</span>
+        <button className={`nav-item ${activeSection === 'settings' ? 'active' : ''}`} onClick={switchToSettings}>
+          <i className="fa-solid fa-gear"></i><span>Settings</span>
+        </button>
+        <button className={`fab-btn ${activeSection === 'upload' ? 'active' : ''}`} onClick={() => switchSection('upload')} aria-label="Add">
+          <i className="fa-solid fa-plus"></i>
         </button>
       </nav>
     </main>

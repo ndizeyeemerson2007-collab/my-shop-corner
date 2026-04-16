@@ -40,7 +40,16 @@ export async function GET(request: NextRequest) {
 
     const { data: orders, error } = await supabaseAdmin
       .from('orders')
-      .select('*')
+      .select(`
+        *,
+        users:user_id (
+          id,
+          email,
+          full_name,
+          phone,
+          address
+        )
+      `)
       .order('created_at', { ascending: false })
       .limit(100);
 
@@ -74,6 +83,11 @@ export async function GET(request: NextRequest) {
 
     const hydrated = (orders || []).map((order: any) => ({
       ...order,
+      full_name: order.full_name || order.users?.full_name || null,
+      phone: order.phone || order.users?.phone || null,
+      location: order.location || order.users?.address || null,
+      customer_email: order.users?.email || null,
+      customer: order.users || null,
       items: itemsByOrder[String(order.id)] || [],
     }));
 

@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { safeFetch, getStoredUser } from "../services/api";
 import { Product, CartItem, User, Review } from "../types";
 import { supabase } from "../lib/supabase";
@@ -9,6 +10,7 @@ import { useConfirm } from "../components/ConfirmProvider";
 
 export default function Home() {
   const confirm = useConfirm();
+  const router = useRouter();
   const [isMounted, setIsMounted] = useState(false);
   const [isCartOpen, setIsCartOpen] = useState(false);
 
@@ -65,6 +67,25 @@ export default function Home() {
     loadInitialData();
   }, []);
 
+  useEffect(() => {
+    if (!isMounted) return;
+
+    const shouldOpenCartAfterLogin = localStorage.getItem('shopcorner_open_cart_after_login') === '1';
+    if (!shouldOpenCartAfterLogin || !user) return;
+
+    setIsCartOpen(true);
+    localStorage.removeItem('shopcorner_open_cart_after_login');
+  }, [isMounted, user, cartItems.length]);
+
+  useEffect(() => {
+    const handleOpenCart = () => {
+      setIsCartOpen(true);
+    };
+
+    window.addEventListener('openCart', handleOpenCart);
+    return () => window.removeEventListener('openCart', handleOpenCart);
+  }, []);
+
   // Auto-slide effect for trending
   useEffect(() => {
     if (trendProducts.length <= 1) return;
@@ -109,6 +130,7 @@ export default function Home() {
         setCartCount(cartRes.cart_count || 0);
         setCartItems(cartRes.cart_items || []);
         setCartTotal(cartRes.cart_total || 0);
+        window.dispatchEvent(new CustomEvent('cartUpdated'));
       }
     } catch (e) {
       console.warn('Error loading cart', e);
@@ -211,6 +233,23 @@ export default function Home() {
 
   const placeOrder = async () => {
     if (cartItems.length === 0) return;
+
+    if (!user) {
+      const shouldLogin = await confirm({
+        title: 'Login Required',
+        message: 'You need to log in before placing an order. Go to login now?',
+        confirmText: 'Login',
+        cancelText: 'Not now',
+        iconClass: 'fa-solid fa-user-lock',
+      });
+
+      if (shouldLogin) {
+        localStorage.setItem('shopcorner_open_cart_after_login', '1');
+        router.push('/login');
+      }
+      return;
+    }
+
     const confirmed = await confirm({
       title: 'Place Order',
       message: 'Are you sure you want to place this order?',
@@ -231,7 +270,13 @@ export default function Home() {
       }
       await loadCartData();
       setIsCartOpen(false);
-      window.alert('Order placed successfully.');
+      await confirm({
+        title: 'Order Placed',
+        message: 'Your order was placed successfully. You can track or manage it from your profile.',
+        confirmText: 'OK',
+        iconClass: 'fa-solid fa-circle-check',
+        hideCancel: true,
+      });
     } catch (err: any) {
       window.alert(err?.message || 'Failed to place order');
     } finally {

@@ -8,6 +8,7 @@ type ConfirmOptions = {
   confirmText?: string;
   cancelText?: string;
   iconClass?: string;
+  hideCancel?: boolean;
 };
 
 type ConfirmContextType = (options: ConfirmOptions) => Promise<boolean>;
@@ -29,6 +30,7 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
         confirmText: options.confirmText || 'Yes',
         cancelText: options.cancelText || 'No',
         iconClass: options.iconClass || 'fa-solid fa-circle-question',
+        hideCancel: options.hideCancel || false,
         resolve,
       });
     });
@@ -55,9 +57,11 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
             <h3 className="confirm-modal-title">{pending.title}</h3>
             <p className="confirm-modal-body">{pending.message}</p>
             <div className="confirm-modal-actions">
-              <button className="confirm-btn confirm-btn-cancel" onClick={() => closeWith(false)}>
-                {pending.cancelText}
-              </button>
+              {!pending.hideCancel && (
+                <button className="confirm-btn confirm-btn-cancel" onClick={() => closeWith(false)}>
+                  {pending.cancelText}
+                </button>
+              )}
               <button className="confirm-btn confirm-btn-accept" onClick={() => closeWith(true)}>
                 {pending.confirmText}
               </button>

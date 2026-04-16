@@ -93,11 +93,26 @@ export default function Header() {
     };
     window.addEventListener('userLogout', handleUserLogout);
 
+    const handleCartUpdated = async () => {
+      try {
+        const cartRes = await safeFetch<{ success: boolean; cart_count: number; cart_items: CartItem[]; cart_total: number }>('/api/cart');
+        if (cartRes.success) {
+          setCartCount(cartRes.cart_count || 0);
+          setCartItems(cartRes.cart_items || []);
+          setCartTotal(cartRes.cart_total || 0);
+        }
+      } catch (e) {
+        console.warn('Error refreshing cart', e);
+      }
+    };
+    window.addEventListener('cartUpdated', handleCartUpdated);
+
     return () => {
       window.removeEventListener('scroll', handleScroll);
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('userLogin', handleUserLogin);
       window.removeEventListener('userLogout', handleUserLogout);
+      window.removeEventListener('cartUpdated', handleCartUpdated);
       clearInterval(timer);
     };
   }, []);
@@ -152,7 +167,10 @@ export default function Header() {
             <Link href="/favorites" className="header-action">
               <i className="fa-regular fa-heart"></i>
             </Link>
-            <div className="cart-icon">
+            <div
+              className="cart-icon"
+              onClick={() => window.dispatchEvent(new CustomEvent('openCart'))}
+            >
               <i className="fa-solid fa-bag-shopping"></i>
               {cartCount > 0 && <span id="cart-count" className="cart-count">{cartCount}</span>}
             </div>

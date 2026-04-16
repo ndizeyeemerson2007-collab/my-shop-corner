@@ -12,6 +12,11 @@ function getSessionId(req: NextRequest) {
   return req.headers.get('X-Session-Id') || 'anonymous_session';
 }
 
+function normalizeOption(value: unknown) {
+  const trimmed = typeof value === 'string' ? value.trim() : value;
+  return trimmed ? trimmed : null;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const sessionId = getSessionId(request);
@@ -66,24 +71,31 @@ export async function POST(request: NextRequest) {
   try {
     const sessionId = getSessionId(request);
     const body = await request.json();
-    const { action, cart_id, product_id, quantity, color, size } = body;
+    const { action, cart_id, product_id, quantity } = body;
+    const color = normalizeOption(body.color);
+    const size = normalizeOption(body.size);
+    const parsedQuantity = Math.max(1, Number(quantity || 1));
 
     if (action === 'add') {
       // Check if product already in cart
-      const { data: existing } = await supabaseAdmin
+      let existingQuery = supabaseAdmin
         .from('cart')
         .select('*')
         .eq('session_id', sessionId)
-        .eq('product_id', product_id)
-        .eq('color', color || null)
-        .eq('size', size || null)
-        .single();
+        .eq('product_id', product_id);
+
+      existingQuery = color === null ? existingQuery.is('color', null) : existingQuery.eq('color', color);
+      existingQuery = size === null ? existingQuery.is('size', null) : existingQuery.eq('size', size);
+
+      const { data: existing, error: existingError } = await existingQuery.maybeSingle();
+
+      if (existingError) throw existingError;
 
       if (existing) {
         // Update quantity
         const { error } = await supabaseAdmin
           .from('cart')
-          .update({ quantity: (existing.quantity || 1) + (quantity || 1) })
+          .update({ quantity: (existing.quantity || 1) + parsedQuantity })
           .eq('id', existing.id);
           
         if (error) throw error;
@@ -94,9 +106,9 @@ export async function POST(request: NextRequest) {
           .insert({
             session_id: sessionId,
             product_id: product_id,
-            quantity: quantity || 1,
-            color: color || null,
-            size: size || null
+            quantity: parsedQuantity,
+            color,
+            size
           });
           
         if (error) throw error;

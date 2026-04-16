@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getCurrentUserFromServer, handleLogoutLocal, safeFetch } from '../../services/api';
 import { User } from '../../types';
@@ -11,6 +11,12 @@ type UserOrder = {
   status: string;
   total_amount: number;
   created_at: string;
+  customer?: {
+    full_name?: string | null;
+    phone?: string | null;
+    address?: string | null;
+    email?: string | null;
+  } | null;
   items?: Array<{
     id: number;
     product_name: string;
@@ -20,16 +26,26 @@ type UserOrder = {
   }>;
 };
 
+type SettingsPanel = 'overview' | 'profile' | 'password';
+
 export default function ProfilePage() {
   const confirm = useConfirm();
+  const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'dash' | 'settings' | 'orders'>('dash');
-  const [saving, setSaving] = useState(false);
+  const [activeTab, setActiveTab] = useState<'dash' | 'orders' | 'settings'>('dash');
+  const [settingsPanel, setSettingsPanel] = useState<SettingsPanel>('overview');
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [savingPassword, setSavingPassword] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [orders, setOrders] = useState<UserOrder[]>([]);
-  const [form, setForm] = useState({ full_name: '', phone: '', address: '' });
-  const [original, setOriginal] = useState({ full_name: '', phone: '', address: '' });
-  const router = useRouter();
+  const [profileForm, setProfileForm] = useState({ full_name: '', phone: '', address: '' });
+  const [profileOriginal, setProfileOriginal] = useState({ full_name: '', phone: '', address: '' });
+  const [passwordForm, setPasswordForm] = useState({
+    current_password: '',
+    new_password: '',
+    confirm_password: '',
+  });
 
   useEffect(() => {
     const loadUser = async () => {
@@ -39,17 +55,20 @@ export default function ProfilePage() {
         router.push('/login');
         return;
       }
+
       const mapped = {
         full_name: serverUser.full_name || '',
         phone: serverUser.phone || '',
         address: serverUser.address || '',
       };
+
       setUser(serverUser);
-      setForm(mapped);
-      setOriginal(mapped);
+      setProfileForm(mapped);
+      setProfileOriginal(mapped);
       await loadOrders();
       setLoading(false);
     };
+
     loadUser();
   }, [router]);
 
@@ -61,6 +80,16 @@ export default function ProfilePage() {
       }
     } catch {
       setOrders([]);
+    }
+  };
+
+  const switchTab = (tab: 'dash' | 'orders' | 'settings') => {
+    setActiveTab(tab);
+    if (tab === 'settings') {
+      setSettingsPanel('overview');
+    }
+    if (tab === 'orders') {
+      loadOrders();
     }
   };
 
@@ -86,26 +115,28 @@ export default function ProfilePage() {
     router.push('/login');
   };
 
-  const hasChanges =
-    form.full_name !== original.full_name ||
-    form.phone !== original.phone ||
-    form.address !== original.address;
+  const hasProfileChanges =
+    profileForm.full_name !== profileOriginal.full_name ||
+    profileForm.phone !== profileOriginal.phone ||
+    profileForm.address !== profileOriginal.address;
 
-  const handleDiscard = () => {
-    if (!hasChanges) return;
+  const handleDiscardProfile = () => {
+    if (!hasProfileChanges) return;
     if (!window.confirm('Discard unsaved changes?')) return;
-    setForm(original);
+    setProfileForm(profileOriginal);
   };
 
-  const handleSave = async (e: React.FormEvent) => {
+  const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
-    setSaving(true);
+
+    setSavingProfile(true);
     try {
       const result = await safeFetch<{ success: boolean; user?: User; message?: string }>('/api/profile', {
         method: 'PATCH',
-        body: JSON.stringify(form),
+        body: JSON.stringify(profileForm),
       });
+
       if (result.success && result.user) {
         setUser(result.user);
         const next = {
@@ -113,18 +144,79 @@ export default function ProfilePage() {
           phone: result.user.phone || '',
           address: result.user.address || '',
         };
-        setForm(next);
-        setOriginal(next);
+        setProfileForm(next);
+        setProfileOriginal(next);
         localStorage.setItem('shopcorner_user', JSON.stringify(result.user));
         window.dispatchEvent(new CustomEvent('userLogin'));
         window.alert('Profile updated successfully.');
+        setSettingsPanel('overview');
       } else {
         window.alert(result.message || 'Failed to update profile');
       }
     } catch (err: any) {
       window.alert(err?.message || 'Could not save changes');
     } finally {
-      setSaving(false);
+      setSavingProfile(false);
+    }
+  };
+
+  const handleSavePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingPassword(true);
+    try {
+      const result = await safeFetch<{ success: boolean; message?: string }>('/api/profile/password', {
+        method: 'PATCH',
+        body: JSON.stringify(passwordForm),
+      });
+
+      if (result.success) {
+        setPasswordForm({
+          current_password: '',
+          new_password: '',
+          confirm_password: '',
+        });
+        window.alert(result.message || 'Password updated successfully.');
+        setSettingsPanel('overview');
+      } else {
+        window.alert(result.message || 'Failed to update password');
+      }
+    } catch (err: any) {
+      window.alert(err?.message || 'Could not update password');
+    } finally {
+      setSavingPassword(false);
+    }
+  };
+
+  const statusClass = (status: string) => `order-status status-${String(status || '').toLowerCase()}`;
+  const canCancelOrder = (status: string) => {
+    const normalized = String(status || '').toLowerCase();
+    return normalized === 'pending' || normalized === 'paid';
+  };
+
+  const handleCancelOrder = async (orderId: number) => {
+    const confirmed = await confirm({
+      title: 'Cancel Order',
+      message: 'Do you want to cancel this order?',
+      confirmText: 'Cancel Order',
+      cancelText: 'Keep',
+      iconClass: 'fa-solid fa-ban',
+    });
+    if (!confirmed) return;
+
+    try {
+      const result = await safeFetch<{ success: boolean; message?: string }>('/api/orders', {
+        method: 'PATCH',
+        body: JSON.stringify({ order_id: orderId, action: 'cancel' }),
+      });
+
+      if (!result.success) {
+        window.alert(result.message || 'Could not cancel order');
+        return;
+      }
+
+      await loadOrders();
+    } catch (err: any) {
+      window.alert(err?.message || 'Could not cancel order');
     }
   };
 
@@ -141,8 +233,6 @@ export default function ProfilePage() {
   const totalSpent = orders.reduce((sum, order) => sum + Number(order.total_amount || 0), 0);
   const completedCount = orders.filter((o) => String(o.status).toLowerCase() === 'delivered').length;
 
-  const statusClass = (status: string) => `order-status status-${String(status || '').toLowerCase()}`;
-
   return (
     <main className="profile-page-shell">
       <section className="profile-header-card">
@@ -153,9 +243,9 @@ export default function ProfilePage() {
 
       <nav className="profile-nav-sticky">
         <div className="horizontal-scroll-nav">
-          <button className={`nav-tab ${activeTab === 'dash' ? 'active' : ''}`} onClick={() => setActiveTab('dash')}>Dashboard</button>
-          <button className={`nav-tab ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>Settings</button>
-          <button className={`nav-tab ${activeTab === 'orders' ? 'active' : ''}`} onClick={() => setActiveTab('orders')}>Orders</button>
+          <button className={`nav-tab ${activeTab === 'dash' ? 'active' : ''}`} onClick={() => switchTab('dash')}>Dashboard</button>
+          <button className={`nav-tab ${activeTab === 'orders' ? 'active' : ''}`} onClick={() => switchTab('orders')}>Orders</button>
+          <button className={`nav-tab ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => switchTab('settings')}>Settings</button>
           <button className="nav-tab nav-tab-danger" onClick={handleLogout}>Logout</button>
         </div>
       </nav>
@@ -180,51 +270,6 @@ export default function ProfilePage() {
         </div>
       </section>
 
-      <section className={`profile-tab-content ${activeTab === 'settings' ? 'active' : ''}`}>
-        <div className="settings-container">
-          <form onSubmit={handleSave}>
-            <div className="input-group">
-              <label>Full Name</label>
-              <input
-                type="text"
-                value={form.full_name}
-                onChange={(e) => setForm({ ...form, full_name: e.target.value })}
-                placeholder="Enter name"
-              />
-            </div>
-            <div className="input-group">
-              <label>Phone Number</label>
-              <input
-                type="text"
-                value={form.phone}
-                onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                placeholder="+250..."
-              />
-            </div>
-            <div className="input-group">
-              <label>Delivery Address</label>
-              <input
-                type="text"
-                value={form.address}
-                onChange={(e) => setForm({ ...form, address: e.target.value })}
-                placeholder="Kigali, Rwanda"
-              />
-            </div>
-
-            <div className="actions-flex">
-              {hasChanges && (
-                <button type="button" className="btn-discard-outline profile-btn-visible" onClick={handleDiscard}>
-                  Discard
-                </button>
-              )}
-              <button type="submit" className="btn-save-full" disabled={saving}>
-                {saving ? 'Saving...' : 'Save Changes'}
-              </button>
-            </div>
-          </form>
-        </div>
-      </section>
-
       <section className={`profile-tab-content ${activeTab === 'orders' ? 'active' : ''}`}>
         {orders.length === 0 ? (
           <div className="profile-empty-state">
@@ -239,8 +284,10 @@ export default function ProfilePage() {
                   <h4>Order #{order.id}</h4>
                   <span className={statusClass(order.status)}>{order.status}</span>
                 </div>
+                <p className="order-card-meta">{new Date(order.created_at).toLocaleString()}</p>
                 <p className="order-card-meta">
-                  {new Date(order.created_at).toLocaleString()}
+                  Contact: {order.customer?.full_name || user.full_name || user.email}
+                  {order.customer?.phone ? ` | ${order.customer.phone}` : ''}
                 </p>
                 <p className="order-card-total">Total: RWF {Number(order.total_amount || 0).toLocaleString()}</p>
                 {(order.items || []).map((item) => (
@@ -253,10 +300,183 @@ export default function ProfilePage() {
                     </small>
                   </div>
                 ))}
+                {canCancelOrder(order.status) && (
+                  <button
+                    type="button"
+                    className="btn-discard-outline profile-btn-visible"
+                    onClick={() => handleCancelOrder(order.id)}
+                  >
+                    Cancel Order
+                  </button>
+                )}
               </article>
             ))}
           </div>
         )}
+      </section>
+
+      <section className={`profile-tab-content profile-settings-content ${activeTab === 'settings' ? 'active' : ''}`}>
+        
+
+        {settingsPanel === 'overview' ? (
+          <div className="settings-overview">
+            <div className="settings-grid">
+              <button type="button" className="settings-tile" onClick={() => setSettingsPanel('profile')}>
+                <span className="settings-tile-icon"><i className="fa-solid fa-user"></i></span>
+                <div className="tile-text">
+                  <strong>User Profile</strong>
+                  <small>Update your name, phone, address and account details</small>
+                </div>
+                <i className="fa-solid fa-chevron-right settings-chevron"></i>
+              </button>
+
+              <button type="button" className="settings-tile" onClick={() => setSettingsPanel('password')}>
+                <span className="settings-tile-icon"><i className="fa-solid fa-lock"></i></span>
+                <div className="tile-text">
+                  <strong>Change Password</strong>
+                  <small>Update your login password securely</small>
+                </div>
+                <i className="fa-solid fa-chevron-right settings-chevron"></i>
+              </button>
+
+              <button type="button" className="settings-tile" onClick={() => switchTab('orders')}>
+                <span className="settings-tile-icon"><i className="fa-solid fa-box"></i></span>
+                <div className="tile-text">
+                  <strong>Order History</strong>
+                  <small>View your recent orders and track their status</small>
+                </div>
+                <i className="fa-solid fa-chevron-right settings-chevron"></i>
+              </button>
+
+              <div className="settings-tile switch-tile">
+                <div className="switch-tile-row">
+                  <span className="settings-tile-icon"><i className="fa-solid fa-bell"></i></span>
+                  <div className="tile-text">
+                    <strong>Push Notifications</strong>
+                    <small>Receive alerts for new order updates</small>
+                  </div>
+                </div>
+                <label className="switch-input">
+                  <input type="checkbox" checked={notificationsEnabled} onChange={(e) => setNotificationsEnabled(e.target.checked)} />
+                  <span className="switch-slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <div className="settings-support-card">
+              <div>
+                <p>If you need help with your account or orders, support is ready to help.</p>
+              </div>
+              <a href="https://wa.me/250123456789" target="_blank" rel="noreferrer">WhatsApp Us</a>
+            </div>
+          </div>
+        ) : null}
+
+        {settingsPanel === 'profile' ? (
+          <div className="settings-profile-panel">
+            <header>
+              <div>
+                <h4>User Profile</h4>
+                <p>Edit your personal details</p>
+              </div>
+              <button type="button" className="logout-btn" onClick={() => setSettingsPanel('overview')} aria-label="Close">
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </header>
+
+            <form onSubmit={handleSaveProfile}>
+              <label className="adm-label">Full Name</label>
+              <input
+                type="text"
+                className="adm-input"
+                value={profileForm.full_name}
+                onChange={(e) => setProfileForm({ ...profileForm, full_name: e.target.value })}
+                placeholder="Enter full name"
+              />
+
+              <label className="adm-label">Email</label>
+              <input type="email" className="adm-input" value={user.email} readOnly />
+
+              <label className="adm-label">Phone</label>
+              <input
+                type="text"
+                className="adm-input"
+                value={profileForm.phone}
+                onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
+                placeholder="+250..."
+              />
+
+              <label className="adm-label">Address</label>
+              <input
+                type="text"
+                className="adm-input"
+                value={profileForm.address}
+                onChange={(e) => setProfileForm({ ...profileForm, address: e.target.value })}
+                placeholder="Kigali, Rwanda"
+              />
+
+              <div className="settings-form-actions">
+                {hasProfileChanges ? (
+                  <button type="button" className="settings-secondary-btn" onClick={handleDiscardProfile}>
+                    Discard Changes
+                  </button>
+                ) : null}
+                <button type="submit" className="adm-btn" disabled={savingProfile}>
+                  {savingProfile ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </form>
+          </div>
+        ) : null}
+
+        {settingsPanel === 'password' ? (
+          <div className="settings-profile-panel">
+            <header>
+              <div>
+                <h4>Change Password</h4>
+                <p>Use your current password to set a new one</p>
+              </div>
+              <button type="button" className="logout-btn" onClick={() => setSettingsPanel('overview')} aria-label="Close">
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </header>
+
+            <form onSubmit={handleSavePassword}>
+              <label className="adm-label">Current Password</label>
+              <input
+                type="password"
+                className="adm-input"
+                value={passwordForm.current_password}
+                onChange={(e) => setPasswordForm({ ...passwordForm, current_password: e.target.value })}
+                placeholder="Enter current password"
+              />
+
+              <label className="adm-label">New Password</label>
+              <input
+                type="password"
+                className="adm-input"
+                value={passwordForm.new_password}
+                onChange={(e) => setPasswordForm({ ...passwordForm, new_password: e.target.value })}
+                placeholder="Enter new password"
+              />
+
+              <label className="adm-label">Confirm Password</label>
+              <input
+                type="password"
+                className="adm-input"
+                value={passwordForm.confirm_password}
+                onChange={(e) => setPasswordForm({ ...passwordForm, confirm_password: e.target.value })}
+                placeholder="Confirm new password"
+              />
+
+              <div className="settings-form-actions">
+                <button type="submit" className="adm-btn" disabled={savingPassword}>
+                  {savingPassword ? 'Saving...' : 'Update Password'}
+                </button>
+              </div>
+            </form>
+          </div>
+        ) : null}
       </section>
     </main>
   );
