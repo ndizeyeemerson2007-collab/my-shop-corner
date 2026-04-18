@@ -1007,23 +1007,31 @@
     .product-detail-modal {
         align-items: flex-start;
         justify-content: center;
-        padding: calc(env(safe-area-inset-top, 0px) + 12px) 0 0;
+        padding: calc(env(safe-area-inset-top, 0px) + 8px) 0 0;
     }
 
     .product-detail-content {
         max-width: 100%;
         width: 100%;
-        height: calc(100% - env(safe-area-inset-top, 0px) - 12px);
-        max-height: calc(100% - env(safe-area-inset-top, 0px) - 12px);
+        height: calc(100% - env(safe-area-inset-top, 0px) - 8px);
+        max-height: calc(100% - env(safe-area-inset-top, 0px) - 8px);
         padding: 0;
         border-radius: 18px 18px 0 0;
         overflow: hidden;
     }
 
     .mobile-detail-nav {
-        padding-top: 18px;
-        padding-left: 16px;
-        padding-right: 16px;
+        gap: 10px;
+        padding: 12px 14px;
+    }
+
+    .mobile-detail-nav .header-icons {
+        gap: 10px;
+    }
+
+    .mobile-detail-nav .header-icons i,
+    .mobile-detail-nav .cart-icon {
+        font-size: 18px;
     }
 
     .detail-scrollable-body {
@@ -1056,6 +1064,11 @@
         overflow-wrap: anywhere;
     }
 
+    .detail-back-btn {
+        font-size: 14px;
+        gap: 6px;
+    }
+
     .related-products-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 10px;
@@ -1072,6 +1085,35 @@
     .related-product-card p,
     .related-product-card strong {
         font-size: 11px;
+    }
+}
+
+@media (max-width: 420px) {
+    .product-detail-modal {
+        padding: calc(env(safe-area-inset-top, 0px) + 6px) 0 0;
+    }
+
+    .product-detail-content {
+        height: calc(100% - env(safe-area-inset-top, 0px) - 6px);
+        max-height: calc(100% - env(safe-area-inset-top, 0px) - 6px);
+    }
+
+    .mobile-detail-nav {
+        gap: 8px;
+        padding: 10px 12px;
+    }
+
+    .mobile-detail-nav .header-icons {
+        gap: 8px;
+    }
+
+    .mobile-detail-nav .header-icons i,
+    .mobile-detail-nav .cart-icon {
+        font-size: 17px;
+    }
+
+    .detail-back-btn {
+        font-size: 13px;
     }
 }
 
