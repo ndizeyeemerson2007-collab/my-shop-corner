@@ -1005,18 +1005,18 @@
 
 @media (max-width: 768px) {
     .product-detail-modal {
-        align-items: center;
+        align-items: flex-start;
         justify-content: center;
-        padding: 16px 12px;
+        padding: 0;
     }
 
     .product-detail-content {
-        max-width: 560px;
+        max-width: 100%;
         width: 100%;
-        height: auto;
-        max-height: min(88vh, 720px);
+        height: 100dvh;
+        max-height: 100dvh;
         padding: 0;
-        border-radius: 24px;
+        border-radius: 0;
         overflow: hidden;
     }
 
@@ -1089,14 +1089,6 @@
 }
 
 @media (max-width: 420px) {
-    .product-detail-modal {
-        padding: 12px 10px;
-    }
-
-    .product-detail-content {
-        max-height: 86vh;
-    }
-
     .mobile-detail-nav {
         gap: 8px;
         padding: 10px 12px;
