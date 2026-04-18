@@ -86,6 +86,17 @@ export default function Home() {
     return () => window.removeEventListener('openCart', handleOpenCart);
   }, []);
 
+  useEffect(() => {
+    if (!selectedProduct) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [selectedProduct]);
+
   // Auto-slide effect for trending
   useEffect(() => {
     if (trendProducts.length <= 1) return;
