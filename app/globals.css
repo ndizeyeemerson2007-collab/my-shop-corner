@@ -736,11 +736,10 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    position: sticky;
-    top: 0;
+    position: relative;
     z-index: 20;
     background: #fff;
-    padding: calc(14px + env(safe-area-inset-top, 0px)) 18px 14px;
+    padding: max(14px, env(safe-area-inset-top, 0px)) 18px 14px;
     border-bottom: 1px solid #eee;
     box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
     flex-shrink: 0;
@@ -1020,6 +1019,7 @@
     }
 
     .mobile-detail-nav {
+        padding-top: max(14px, env(safe-area-inset-top, 0px));
         padding-left: 16px;
         padding-right: 16px;
     }
