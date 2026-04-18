@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import LoadingDots from '../../components/LoadingDots';
 
 export default function LoginPage() {
   const [mode, setMode] = useState<'login' | 'signup'>('login');
@@ -221,10 +222,7 @@ export default function LoginPage() {
             disabled={loading}
           >
             {loading ? (
-              <>
-                <span className="spinner"></span>
-                Processing...
-              </>
+              <LoadingDots label="Loading" size="sm" className="dot-loader--inverse dot-loader--button" />
             ) : mode === 'login' ? (
               'Sign In'
             ) : (

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { getCurrentUserFromServer, handleLogoutLocal, safeFetch } from '../../services/api';
 import { User } from '../../types';
 import { useConfirm } from '../../components/ConfirmProvider';
+import LoadingDots from '../../components/LoadingDots';
 
 type UserOrder = {
   id: number;
@@ -104,6 +105,7 @@ export default function ProfilePage() {
     if (!confirmed) return;
 
     handleLogoutLocal();
+    window.dispatchEvent(new CustomEvent('userLogout'));
     try {
       await safeFetch('/api/auth', {
         method: 'POST',
@@ -112,7 +114,8 @@ export default function ProfilePage() {
     } catch {
       // local logout still succeeds
     }
-    router.push('/login');
+    router.replace('/login');
+    router.refresh();
   };
 
   const hasProfileChanges =
@@ -221,11 +224,19 @@ export default function ProfilePage() {
   };
 
   if (loading) {
-    return <div className="profile-loading">Loading...</div>;
+    return (
+      <div className="profile-loading">
+        <LoadingDots label="Loading" size="lg" />
+      </div>
+    );
   }
 
   if (!user) {
-    return <div className="profile-loading">Loading...</div>;
+    return (
+      <div className="profile-loading">
+        <LoadingDots label="Loading" size="lg" />
+      </div>
+    );
   }
 
   const initial = (user.full_name?.charAt(0) || user.email?.charAt(0) || 'U').toUpperCase();
@@ -422,7 +433,9 @@ export default function ProfilePage() {
                   </button>
                 ) : null}
                 <button type="submit" className="adm-btn" disabled={savingProfile}>
-                  {savingProfile ? 'Saving...' : 'Save'}
+                  {savingProfile ? (
+                    <LoadingDots label="Loading" size="sm" className="dot-loader--inverse dot-loader--button" />
+                  ) : 'Save'}
                 </button>
               </div>
             </form>
@@ -471,7 +484,9 @@ export default function ProfilePage() {
 
               <div className="settings-form-actions">
                 <button type="submit" className="adm-btn" disabled={savingPassword}>
-                  {savingPassword ? 'Saving...' : 'Update Password'}
+                  {savingPassword ? (
+                    <LoadingDots label="Loading" size="sm" className="dot-loader--inverse dot-loader--button" />
+                  ) : 'Update Password'}
                 </button>
               </div>
             </form>

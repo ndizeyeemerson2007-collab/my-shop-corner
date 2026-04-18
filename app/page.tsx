@@ -3,10 +3,13 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { safeFetch, getStoredUser } from "../services/api";
+import { safeFetch, getStoredUser, normalizeProductImages, resolveProductImagePath } from "../services/api";
 import { Product, CartItem, User, Review } from "../types";
 import { supabase } from "../lib/supabase";
 import { useConfirm } from "../components/ConfirmProvider";
+import LoadingDots from "../components/LoadingDots";
+
+const PENDING_PRODUCT_KEY = 'shopcorner_pending_product';
 
 export default function Home() {
   const confirm = useConfirm();
@@ -25,8 +28,6 @@ export default function Home() {
   const [cartTotal, setCartTotal] = useState(0);
 
   const [loadingProducts, setLoadingProducts] = useState(true);
-  const [isSearchOpen, setIsSearchOpen] = useState(false);
-
   // Product Detail Modal State
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [relatedProducts, setRelatedProducts] = useState<Product[]>([]);
@@ -35,7 +36,9 @@ export default function Home() {
   const [placingOrder, setPlacingOrder] = useState(false);
   const [selectedColor, setSelectedColor] = useState('');
   const [selectedSize, setSelectedSize] = useState('');
-  const [selectedQty, setSelectedQty] = useState(1);
+  const [selectedQty, setSelectedQty] = useState('1');
+  const [detailImageIndex, setDetailImageIndex] = useState(0);
+  const [productImageIndices, setProductImageIndices] = useState<Record<number, number>>({});
 
   // Review Form State
   const [newReviewText, setNewReviewText] = useState('');
@@ -97,6 +100,46 @@ export default function Home() {
     };
   }, [selectedProduct]);
 
+  useEffect(() => {
+    if (loadingProducts) return;
+
+    const openPendingProduct = async (product?: Product | null) => {
+      const pendingProduct = product || (() => {
+        if (typeof window === 'undefined') return null;
+
+        const raw = sessionStorage.getItem(PENDING_PRODUCT_KEY);
+        if (!raw) return null;
+
+        try {
+          return JSON.parse(raw) as Product;
+        } catch {
+          return null;
+        }
+      })();
+
+      if (!pendingProduct?.id) return;
+
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem(PENDING_PRODUCT_KEY);
+      }
+
+      await openProductDetail(pendingProduct);
+    };
+
+    void openPendingProduct();
+
+    const handlePendingProduct = (event: Event) => {
+      const customEvent = event as CustomEvent<Product>;
+      void openPendingProduct(customEvent.detail);
+    };
+
+    window.addEventListener('shopcorner:pending-product', handlePendingProduct);
+
+    return () => {
+      window.removeEventListener('shopcorner:pending-product', handlePendingProduct);
+    };
+  }, [loadingProducts]);
+
   // Auto-slide effect for trending
   useEffect(() => {
     if (trendProducts.length <= 1) return;
@@ -154,6 +197,10 @@ export default function Home() {
     return String(raw).split(',').map((x) => x.trim()).filter(Boolean);
   };
 
+  const setProductImageIndex = (productId: number, nextIndex: number) => {
+    setProductImageIndices((prev) => ({ ...prev, [productId]: nextIndex }));
+  };
+
   const confirmAddToCart = async (productId: number, options?: { color?: string; size?: string; quantity?: number }) => {
     const confirmed = await confirm({
       title: 'Add To Cart',
@@ -192,11 +239,12 @@ export default function Home() {
 
   const openProductDetail = async (product: Product) => {
     setSelectedProduct(product);
+    setDetailImageIndex(0);
     const colors = parseOptionList(product.colors);
     const sizes = parseOptionList(product.sizes);
     setSelectedColor(colors[0] || '');
     setSelectedSize(sizes[0] || '');
-    setSelectedQty(1);
+    setSelectedQty('1');
     setLoadingDetails(true);
     setRelatedProducts([]);
     setProductReviews([]);
@@ -319,14 +367,107 @@ export default function Home() {
     }
   };
 
+  const renderProductCard = (product: Product) => {
+    const productImages = normalizeProductImages(product);
+    const activeImageIndex = productImages.length > 0 ? Math.min(productImageIndices[product.id] || 0, productImages.length - 1) : -1;
+
+    return (
+      <div className="product-card" key={product.id} onClick={() => openProductDetail(product)} style={{ cursor: 'pointer' }}>
+        <div className="product-image">
+          <div className="image-carousel">
+            {productImages.map((image, imageIndex) => (
+              <img
+                key={`${product.id}-${imageIndex}`}
+                src={image}
+                alt={`${product.name} ${imageIndex + 1}`}
+                className={`carousel-image ${activeImageIndex === imageIndex ? 'active' : ''}`}
+              />
+            ))}
+          </div>
+          {productImages.length > 1 && (
+            <>
+              <button
+                type="button"
+                className="carousel-arrow carousel-prev"
+                aria-label="Previous product image"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setProductImageIndex(product.id, activeImageIndex === 0 ? productImages.length - 1 : activeImageIndex - 1);
+                }}
+              >
+                <i className="fa-solid fa-chevron-left"></i>
+              </button>
+              <button
+                type="button"
+                className="carousel-arrow carousel-next"
+                aria-label="Next product image"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setProductImageIndex(product.id, activeImageIndex === productImages.length - 1 ? 0 : activeImageIndex + 1);
+                }}
+              >
+                <i className="fa-solid fa-chevron-right"></i>
+              </button>
+              <div className="carousel-dots">
+                {productImages.map((_, imageIndex) => (
+                  <button
+                    key={`${product.id}-dot-${imageIndex}`}
+                    type="button"
+                    className={`carousel-dot ${activeImageIndex === imageIndex ? 'active' : ''}`}
+                    aria-label={`View image ${imageIndex + 1}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setProductImageIndex(product.id, imageIndex);
+                    }}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+          {product.badge && <span className="product-badge">{product.badge}</span>}
+          <button
+            className="add-to-cart-btn"
+            title="Quick add to cart"
+            onClick={(e) => {
+              e.stopPropagation();
+              const colors = parseOptionList(product.colors);
+              const sizes = parseOptionList(product.sizes);
+              confirmAddToCart(Number(product.id), {
+                color: colors[0],
+                size: sizes[0],
+                quantity: 1,
+              });
+            }}
+          >
+            <i className="fa-solid fa-plus"></i>
+          </button>
+        </div>
+        <div className="product-info">
+          <p className="title">{product.name}</p>
+          {product.badge && <p className="badge">{product.badge}</p>}
+          <p className="price">
+            RWF<span className="big-price">{Number(product.price).toFixed(2)}</span>
+            {product.original_price && <span className="original-price">RWF{Number(product.original_price).toFixed(2)}</span>}
+            <span className="sold">{product.sold || 0}+ sold</span>
+          </p>
+        </div>
+      </div>
+    );
+  };
+
   // Avoid hydration mismatch by waiting for mount
   if (!isMounted) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="loading">Initializing ShopCorner...</div>
+        <div className="loading">
+          <LoadingDots label="Loading" size="lg" />
+        </div>
       </div>
     );
   }
+
+  const detailImages = normalizeProductImages(selectedProduct);
+  const activeDetailImageIndex = detailImages.length > 0 ? Math.min(detailImageIndex, detailImages.length - 1) : -1;
 
   return (
     <>
@@ -343,7 +484,11 @@ export default function Home() {
           >
             {trendProducts.length > 0 ? trendProducts.map((p, idx) => (
               <div className="slide" key={p.id} style={{ minWidth: '100%', flexShrink: 0 }}>
-                <img src={p.image || 'https://picsum.photos/seed/trend/1200/800'} alt={p.name} className="slide-image" />
+                {resolveProductImagePath(p.image) ? (
+                  <img src={resolveProductImagePath(p.image)} alt={p.name} className="slide-image" />
+                ) : (
+                  <div className="slide-image" />
+                )}
                 <div className="slide-overlay">
                   <div className="slide-product-info">
                     {p.badge && <span className="slide-product-badge">{p.badge}</span>}
@@ -353,7 +498,11 @@ export default function Home() {
                 </div>
               </div>
             )) : (
-              <div className="slide" style={{ minWidth: '100%' }}><div className="loading" style={{ color: 'white', marginTop: '100px' }}>Loading trends...</div></div>
+              <div className="slide" style={{ minWidth: '100%' }}>
+                <div className="loading" style={{ color: 'white', marginTop: '100px' }}>
+                  <LoadingDots label="Loading" className="dot-loader--inverse" />
+                </div>
+              </div>
             )}
           </div>
           <div className="slideshow-nav" id="slideshow-dots">
@@ -380,41 +529,11 @@ export default function Home() {
 
       <main className="product-grid slideshow-visible" id="product-grid">
         {loadingProducts ? (
-          <div className="loading">Loading products...</div>
+          <div className="loading">
+            <LoadingDots label="Loading" size="lg" />
+          </div>
         ) : products.length > 0 ? (
-          products.map(product => (
-            <div className="product-card" key={product.id} onClick={() => openProductDetail(product)} style={{ cursor: 'pointer' }}>
-              <div className="product-image">
-                <img src={product.image || 'https://picsum.photos/seed/default/300/400'} alt={product.name} className="carousel-image active" />
-                {product.badge && <span className="product-badge">{product.badge}</span>}
-                <button
-                  className="add-to-cart-btn"
-                  title="Quick add to cart"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const colors = parseOptionList(product.colors);
-                    const sizes = parseOptionList(product.sizes);
-                    confirmAddToCart(Number(product.id), {
-                      color: colors[0],
-                      size: sizes[0],
-                      quantity: 1,
-                    });
-                  }}
-                >
-                  <i className="fa-solid fa-plus"></i>
-                </button>
-              </div>
-              <div className="product-info">
-                <p className="title">{product.name}</p>
-                {product.badge && <p className="badge">{product.badge}</p>}
-                <p className="price">
-                  RWF<span className="big-price">{Number(product.price).toFixed(2)}</span>
-                  {product.original_price && <span className="original-price">RWF{Number(product.original_price).toFixed(2)}</span>}
-                  <span className="sold">{product.sold || 0}+ sold</span>
-                </p>
-              </div>
-            </div>
-          ))
+          products.map(renderProductCard)
         ) : (
           <div className="no-products">No products found.</div>
         )}
@@ -433,7 +552,11 @@ export default function Home() {
               <div id="cart-items">
                 {cartItems.length > 0 ? cartItems.map(item => (
                   <div className="cart-item" key={item.cart_id}>
-                    <img src={item.image || 'https://picsum.photos/seed/cart/100/100'} alt={item.name} className="cart-item-image" />
+                    {resolveProductImagePath(item.image) ? (
+                      <img src={resolveProductImagePath(item.image)} alt={item.name} className="cart-item-image" />
+                    ) : (
+                      <div className="cart-item-image" />
+                    )}
                     <div className="cart-item-details">
                       <h4>{item.name}</h4>
                       <p className="cart-item-price">RWF{Number(item.price).toFixed(2)}</p>
@@ -458,7 +581,9 @@ export default function Home() {
                 disabled={cartItems.length === 0 || placingOrder}
                 onClick={placeOrder}
               >
-                {placingOrder ? 'Placing...' : 'Place Order'}
+                {placingOrder ? (
+                  <LoadingDots label="Loading" size="sm" className="dot-loader--inverse dot-loader--button" />
+                ) : 'Place Order'}
               </button>
             </div>
           </div>
@@ -486,7 +611,45 @@ export default function Home() {
               <div className="product-detail-container">
                 <div className="detail-image-section">
                   <div className="detail-image-carousel">
-                    <img src={selectedProduct.image || 'https://picsum.photos/seed/default/300/400'} alt={selectedProduct.name} className="detail-carousel-image active" />
+                    {detailImages.map((image, imageIndex) => (
+                      <img
+                        key={`${selectedProduct.id}-${imageIndex}`}
+                        src={image}
+                        alt={`${selectedProduct.name} ${imageIndex + 1}`}
+                        className={`detail-carousel-image ${activeDetailImageIndex === imageIndex ? 'active' : ''}`}
+                      />
+                    ))}
+                    {detailImages.length > 1 && (
+                      <>
+                        <button
+                          type="button"
+                          className="carousel-arrow carousel-prev detail-carousel-arrow"
+                          aria-label="Previous detail image"
+                          onClick={() => setDetailImageIndex(activeDetailImageIndex === 0 ? detailImages.length - 1 : activeDetailImageIndex - 1)}
+                        >
+                          <i className="fa-solid fa-chevron-left"></i>
+                        </button>
+                        <button
+                          type="button"
+                          className="carousel-arrow carousel-next detail-carousel-arrow"
+                          aria-label="Next detail image"
+                          onClick={() => setDetailImageIndex(activeDetailImageIndex === detailImages.length - 1 ? 0 : activeDetailImageIndex + 1)}
+                        >
+                          <i className="fa-solid fa-chevron-right"></i>
+                        </button>
+                        <div className="detail-carousel-dots">
+                          {detailImages.map((_, imageIndex) => (
+                            <button
+                              key={`${selectedProduct.id}-detail-dot-${imageIndex}`}
+                              type="button"
+                              className={`detail-carousel-dot ${activeDetailImageIndex === imageIndex ? 'active' : ''}`}
+                              aria-label={`View image ${imageIndex + 1}`}
+                              onClick={() => setDetailImageIndex(imageIndex)}
+                            />
+                          ))}
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
                 <div className="detail-info-section">
@@ -545,7 +708,30 @@ export default function Home() {
                       min={1}
                       max={Math.max(1, Number(selectedProduct.stock || 99))}
                       value={selectedQty}
-                      onChange={(e) => setSelectedQty(Math.max(1, Number(e.target.value || 1)))}
+                      onChange={(e) => {
+                        const nextValue = e.target.value;
+                        if (nextValue === '') {
+                          setSelectedQty('');
+                          return;
+                        }
+
+                        const maxQty = Math.max(1, Number(selectedProduct.stock || 99));
+                        const numericValue = Number(nextValue);
+                        if (Number.isNaN(numericValue)) return;
+
+                        setSelectedQty(String(Math.min(maxQty, Math.max(1, numericValue))));
+                      }}
+                      onBlur={() => {
+                        const maxQty = Math.max(1, Number(selectedProduct.stock || 99));
+                        const numericValue = Number(selectedQty);
+
+                        if (!selectedQty || Number.isNaN(numericValue)) {
+                          setSelectedQty('1');
+                          return;
+                        }
+
+                        setSelectedQty(String(Math.min(maxQty, Math.max(1, numericValue))));
+                      }}
                     />
                   </div>
 
@@ -555,7 +741,7 @@ export default function Home() {
                       confirmAddToCart(Number(selectedProduct.id), {
                         color: selectedColor || undefined,
                         size: selectedSize || undefined,
-                        quantity: selectedQty || 1,
+                        quantity: Math.max(1, Number(selectedQty || 1)),
                       })
                     }
                   >
@@ -566,7 +752,9 @@ export default function Home() {
 
                   <h3>Customer Reviews ({productReviews.length})</h3>
                   {loadingDetails ? (
-                    <div className="detail-loading">Loading reviews...</div>
+                    <div className="detail-loading">
+                      <LoadingDots label="Loading" />
+                    </div>
                   ) : (
                     <div className="reviews-list" style={{ maxHeight: '200px', overflowY: 'auto', marginBottom: '15px' }}>
                       {productReviews.length > 0 ? productReviews.map((rev) => (
@@ -611,7 +799,11 @@ export default function Home() {
                   <div className="related-products-grid">
                     {relatedProducts.map(rp => (
                       <div key={rp.id} onClick={() => openProductDetail(rp)} className="related-product-card">
-                        <img src={rp.image || 'https://picsum.photos/seed/default/150/150'} alt={rp.name} />
+                        {resolveProductImagePath(rp.image) ? (
+                          <img src={resolveProductImagePath(rp.image)} alt={rp.name} />
+                        ) : (
+                          <div className="related-product-card-image" />
+                        )}
                         <p>{rp.name}</p>
                         <strong>RWF{Number(rp.price).toFixed(2)}</strong>
                       </div>

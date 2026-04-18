@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { getCurrentUserFromServer, handleLogoutLocal, safeFetch } from '../../services/api';
+import { getCurrentUserFromServer, handleLogoutLocal, safeFetch, resolveProductImagePath } from '../../services/api';
 import { Product, User } from '../../types';
 import { useConfirm } from '../../components/ConfirmProvider';
+import LoadingDots from '../../components/LoadingDots';
 
 type AdminSection = 'stats' | 'products' | 'upload' | 'orders';
 type AdminStats = {
@@ -52,6 +53,7 @@ export default function AdminPage() {
   const [orderListModal, setOrderListModal] = useState<AdminOrder | null>(null);
   const [customerInfoModal, setCustomerInfoModal] = useState<AdminOrder | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [savingProfile, setSavingProfile] = useState(false);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
@@ -70,6 +72,7 @@ export default function AdminPage() {
     is_trend: false,
     image: '',
   });
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -138,6 +141,7 @@ export default function AdminPage() {
     if (!confirmed) return;
 
     handleLogoutLocal();
+    window.dispatchEvent(new CustomEvent('userLogout'));
     try {
       await safeFetch('/api/auth', {
         method: 'POST',
@@ -146,7 +150,8 @@ export default function AdminPage() {
     } catch {
       // ignore
     }
-    router.push('/login');
+    router.replace('/login');
+    router.refresh();
   };
 
   const switchSection = async (section: AdminSection) => {
@@ -166,6 +171,25 @@ export default function AdminPage() {
     e.preventDefault();
     setUploading(true);
     try {
+      if (imageFiles.length === 0) {
+        window.alert('Please choose at least one product image.');
+        return;
+      }
+
+      const uploadData = new FormData();
+      imageFiles.forEach((file) => uploadData.append('files', file));
+
+      const uploadResult = await safeFetch<{ success: boolean; message?: string; paths?: string[] }>('/api/upload', {
+        method: 'POST',
+        body: uploadData,
+      });
+
+      const uploadedPaths = Array.isArray(uploadResult.paths) ? uploadResult.paths : [];
+      if (!uploadResult.success || uploadedPaths.length === 0) {
+        window.alert(uploadResult.message || 'Image upload failed.');
+        return;
+      }
+
       const payload = {
         name: form.name,
         description: form.description,
@@ -177,8 +201,8 @@ export default function AdminPage() {
         badge: form.badge,
         sold: Number(form.sold),
         is_trend: form.is_trend,
-        image: form.image,
-        images: form.image ? [form.image] : [],
+        image: uploadedPaths[0],
+        images: uploadedPaths,
       };
       const result = await safeFetch<{ success: boolean; message?: string }>('/api/products', {
         method: 'POST',
@@ -199,6 +223,10 @@ export default function AdminPage() {
           is_trend: false,
           image: '',
         });
+        setImageFiles([]);
+        if (imageInputRef.current) {
+          imageInputRef.current.value = '';
+        }
         await Promise.all([loadProducts(), loadDashboardStats()]);
         setActiveSection('products');
       } else {
@@ -209,6 +237,11 @@ export default function AdminPage() {
     } finally {
       setUploading(false);
     }
+  };
+
+  const handleImageSelection = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    setImageFiles(files);
   };
 
   const handleDeleteProduct = async (id: number) => {
@@ -308,11 +341,19 @@ export default function AdminPage() {
   };
 
   if (loading) {
-    return <div className="profile-loading">Loading...</div>;
+    return (
+      <div className="profile-loading">
+        <LoadingDots label="Loading" size="lg" />
+      </div>
+    );
   }
 
   if (!user) {
-    return <div className="profile-loading">Loading...</div>;
+    return (
+      <div className="profile-loading">
+        <LoadingDots label="Loading" size="lg" />
+      </div>
+    );
   }
 
   return (
@@ -346,7 +387,11 @@ export default function AdminPage() {
           ) : (
             products.map((p) => (
               <div key={p.id} className="admin-card admin-product-card">
-                <img src={p.image || '/upload/sample3.jpg'} alt={p.name} />
+                {resolveProductImagePath(p.image) ? (
+                  <img src={resolveProductImagePath(p.image)} alt={p.name} />
+                ) : (
+                  <div className="admin-product-image-placeholder" />
+                )}
                 <div className="admin-product-main">
                   <p>
                     {p.name} {p.is_trend ? <i className="fa-solid fa-fire admin-trend-icon" /> : null}
@@ -388,8 +433,29 @@ export default function AdminPage() {
           <label className="adm-label">Category</label>
           <input className="adm-input" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
 
-          <label className="adm-label">Main Image URL</label>
-          <input className="adm-input" value={form.image} onChange={(e) => setForm({ ...form, image: e.target.value })} />
+          <label className="adm-label">Product Images</label>
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            required
+            className="adm-input"
+            onChange={handleImageSelection}
+          />
+          <p className="admin-upload-help">
+            Choose one or many images from the device. The first image becomes the main image.
+          </p>
+          {imageFiles.length > 0 ? (
+            <div className="admin-upload-list">
+              {imageFiles.map((file, index) => (
+                <div key={`${file.name}-${index}`} className="admin-upload-item">
+                  <span>{file.name}</span>
+                  {index === 0 ? <strong>Main image</strong> : <small>Extra image</small>}
+                </div>
+              ))}
+            </div>
+          ) : null}
 
           <div className="admin-two-col">
             <div>
@@ -419,7 +485,9 @@ export default function AdminPage() {
           </label>
 
           <button className="adm-btn" type="submit" disabled={uploading}>
-            {uploading ? 'Saving...' : 'Save Product'}
+            {uploading ? (
+              <LoadingDots label="Loading" size="sm" className="dot-loader--inverse dot-loader--button" />
+            ) : 'Save Product'}
           </button>
         </form>
       </section>
@@ -595,7 +663,9 @@ export default function AdminPage() {
                   </button>
                 ) : null}
                 <button type="submit" className="adm-btn" disabled={savingProfile}>
-                  {savingProfile ? 'Saving...' : 'Save'}
+                  {savingProfile ? (
+                    <LoadingDots label="Loading" size="sm" className="dot-loader--inverse dot-loader--button" />
+                  ) : 'Save'}
                 </button>
               </div>
             </form>
