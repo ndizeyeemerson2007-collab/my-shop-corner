@@ -3,9 +3,16 @@ import { getSupabase } from '../../../lib/utils';
 import { createClient } from '@supabase/supabase-js';
 
 // Create a service role client for admin operations
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!supabaseUrl || !supabaseServiceRoleKey) {
+  throw new Error('Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variable');
+}
+
 const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+  supabaseUrl,
+  supabaseServiceRoleKey
 );
 
 function isExistingAuthUserError(message?: string | null) {
@@ -217,25 +224,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Generate session token for the new user
-      const { error: sessionError } = await supabaseAdmin.auth.admin.generateLink({
-        type: 'signup',
-        email,
-        password,
-      });
-
-      if (sessionError) {
-        console.error('Session generation error:', sessionError);
-        // Still return success since the user was created
-        return NextResponse.json({
-          success: true,
-          user: newUser,
-          redirect: '/profile',
-          session: null,
-        });
-      }
-
-      // Sign in the user to get a session
+      // Sign in the user to get a session after successful creation.
       const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
         email,
         password,

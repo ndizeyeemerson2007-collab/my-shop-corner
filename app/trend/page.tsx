@@ -1,17 +1,16 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { safeFetch, getStoredUser, normalizeProductImages, resolveProductImagePath } from "../services/api";
-import { Product, CartItem, User, Review } from "../types";
-import { supabase } from "../lib/supabase";
-import { useConfirm } from "../components/ConfirmProvider";
-import LoadingDots from "../components/LoadingDots";
+import { safeFetch, getStoredUser, normalizeProductImages, resolveProductImagePath } from "../../services/api";
+import { Product, CartItem, User, Review } from "../../types";
+import { supabase } from "../../lib/supabase";
+import { useConfirm } from "../../components/ConfirmProvider";
+import LoadingDots from "../../components/LoadingDots";
 
 const PENDING_PRODUCT_KEY = 'shopcorner_pending_product';
 
-export default function Home() {
+export default function TrendPage() {
   const confirm = useConfirm();
   const router = useRouter();
   const [isMounted, setIsMounted] = useState(false);
@@ -21,7 +20,6 @@ export default function Home() {
   const [user, setUser] = useState<User | null>(null);
 
   // Data
-  const [products, setProducts] = useState<Product[]>([]);
   const [trendProducts, setTrendProducts] = useState<Product[]>([]);
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [cartCount, setCartCount] = useState(0);
@@ -45,24 +43,6 @@ export default function Home() {
   // Review Form State
   const [newReviewText, setNewReviewText] = useState('');
   const [newReviewRating, setNewReviewRating] = useState(5);
-
-  // Slide state (moved up to avoid Rules of Hooks violation before early return)
-  const [currentSlide, setCurrentSlide] = useState(0);
-
-  // Connection check
-  useEffect(() => {
-    const checkConnection = async () => {
-      const { data, error } = await supabase.from('products').select('count');
-
-      if (error) {
-        console.error("Connection Failed:", error.message);
-      } else {
-        console.log("Connection Successful! Data found:", data);
-      }
-    };
-
-    checkConnection();
-  }, []);
 
   // Main Init
   useEffect(() => {
@@ -142,28 +122,15 @@ export default function Home() {
     };
   }, [loadingProducts]);
 
-  // Auto-slide effect for trending
-  useEffect(() => {
-    if (trendProducts.length <= 1) return;
-    const slideTimer = setInterval(() => {
-      setCurrentSlide((prev) => (prev + 1) % trendProducts.length);
-    }, 3500); // changes every 3.5 seconds
-    return () => clearInterval(slideTimer);
-  }, [trendProducts.length]);
-
   const loadInitialData = async () => {
     setLoadingProducts(true);
     try {
       // Intentionally using catch to prevent the whole app from crashing if APIs don't exist yet
-      const [prodRes, trendRes, cartRes] = await Promise.allSettled([
-        safeFetch<{ success: boolean; products: Product[] }>('/api/products?limit=20'),
+      const [trendRes, cartRes] = await Promise.allSettled([
         safeFetch<{ success: boolean; products: Product[] }>('/api/products?trend=1'),
         safeFetch<{ success: boolean; cart_count: number; cart_items: CartItem[]; cart_total: number }>('/api/cart')
       ]);
 
-      if (prodRes.status === 'fulfilled' && prodRes.value.success) {
-        setProducts(prodRes.value.products || []);
-      }
       if (trendRes.status === 'fulfilled' && trendRes.value.success) {
         setTrendProducts(trendRes.value.products || []);
       }
@@ -257,96 +224,22 @@ export default function Home() {
       // Fetch related products
       const relatedRes = await safeFetch<{ success: boolean; products: Product[] }>(`/api/products?limit=4&category=${product.category || ''}`);
       if (relatedRes.success) {
-        setRelatedProducts(relatedRes.products.filter(p => p.id !== product.id).slice(0, 4));
+        setRelatedProducts(relatedRes.products.filter((p: Product) => p.id !== product.id).slice(0, 4));
       }
 
       // Fetch reviews
       const reviewsRes = await safeFetch<{ success: boolean; reviews: Review[] }>(`/api/reviews?product_id=${product.id}`);
       if (reviewsRes.success) {
-        setProductReviews(reviewsRes.reviews);
+        setProductReviews(reviewsRes.reviews || []);
       }
     } catch (e) {
-      console.warn("Failed loading product details", e);
+      console.warn('Error loading product details', e);
     } finally {
       setLoadingDetails(false);
     }
   };
 
   const closeProductDetail = () => setSelectedProduct(null);
-
-  const removeFromCart = async (cartId: number) => {
-    const confirmed = await confirm({
-      title: 'Remove Item',
-      message: 'Remove this item from cart?',
-      confirmText: 'Yes',
-      cancelText: 'No',
-      iconClass: 'fa-solid fa-trash',
-    });
-    if (!confirmed) return;
-
-    try {
-      await safeFetch('/api/cart', {
-        method: 'POST',
-        body: JSON.stringify({ action: 'remove', cart_id: cartId }),
-      });
-      await loadCartData();
-    } catch (err: any) {
-      window.alert(err?.message || 'Could not remove item from cart');
-    }
-  };
-
-  const placeOrder = async () => {
-    if (cartItems.length === 0) return;
-
-    if (!user) {
-      const shouldLogin = await confirm({
-        title: 'Login Required',
-        message: 'You need to log in before placing an order. Go to login now?',
-        confirmText: 'Login',
-        cancelText: 'Not now',
-        iconClass: 'fa-solid fa-user-lock',
-      });
-
-      if (shouldLogin) {
-        localStorage.setItem('shopcorner_open_cart_after_login', '1');
-        router.push('/login');
-      }
-      return;
-    }
-
-    const confirmed = await confirm({
-      title: 'Place Order',
-      message: 'Are you sure you want to place this order?',
-      confirmText: 'Place',
-      cancelText: 'Cancel',
-      iconClass: 'fa-solid fa-receipt',
-    });
-    if (!confirmed) return;
-
-    setPlacingOrder(true);
-    try {
-      const result = await safeFetch<{ success: boolean; message?: string }>('/api/orders', {
-        method: 'POST',
-      });
-      if (!result.success) {
-        window.alert(result.message || 'Could not place order');
-        return;
-      }
-      await loadCartData();
-      setIsCartOpen(false);
-      await confirm({
-        title: 'Order Placed',
-        message: 'Your order was placed successfully. You can track or manage it from your profile.',
-        confirmText: 'OK',
-        iconClass: 'fa-solid fa-circle-check',
-        hideCancel: true,
-      });
-    } catch (err: any) {
-      window.alert(err?.message || 'Failed to place order');
-    } finally {
-      setPlacingOrder(false);
-    }
-  };
 
   const submitReview = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -372,7 +265,53 @@ export default function Home() {
     }
   };
 
-  const renderProductCard = (product: Product) => {
+  const placeOrder = async () => {
+    if (cartItems.length === 0) return;
+
+    setPlacingOrder(true);
+    try {
+      const res = await safeFetch<{ success: boolean; order_id?: string; message?: string }>('/api/orders', {
+        method: 'POST',
+        body: JSON.stringify({
+          items: cartItems,
+        }),
+      });
+
+      if (res.success) {
+        window.alert('Order placed successfully!');
+        setCartItems([]);
+        setCartCount(0);
+        setCartTotal(0);
+        setIsCartOpen(false);
+        window.dispatchEvent(new CustomEvent('cartUpdated'));
+      } else {
+        window.alert(res.message || 'Failed to place order');
+      }
+    } catch (err: any) {
+      window.alert(err?.message || 'Failed to place order');
+    } finally {
+      setPlacingOrder(false);
+    }
+  };
+
+  const removeFromCart = async (cartId: number) => {
+    try {
+      const res = await safeFetch<{ success: boolean; message?: string }>('/api/cart', {
+        method: 'DELETE',
+        body: JSON.stringify({ cart_id: cartId }),
+      });
+
+      if (res.success) {
+        await loadCartData();
+      } else {
+        window.alert(res.message || 'Failed to remove item');
+      }
+    } catch (e: any) {
+      window.alert(e?.message || 'Failed to remove item');
+    }
+  };
+
+  const renderProductCard = (product: Product, index: number) => {
     const productImages = normalizeProductImages(product);
     const activeImageIndex = productImages.length > 0 ? Math.min(productImageIndices[product.id] || 0, productImages.length - 1) : -1;
 
@@ -402,7 +341,7 @@ export default function Home() {
     };
 
     return (
-      <div className="product-card" key={product.id} onClick={() => openProductDetail(product)} style={{ cursor: 'pointer' }}>
+      <div className={`product-card trend-first-card`} key={product.id} onClick={() => openProductDetail(product)} style={{ cursor: 'pointer', '--animation-delay': `${0.1 + index * 0.1}s` } as React.CSSProperties}>
         <div className="product-image">
           <div
             className="image-carousel"
@@ -410,7 +349,7 @@ export default function Home() {
             onTouchStart={handleProductImageTouchStart}
             onTouchEnd={handleProductImageTouchEnd}
           >
-            {productImages.map((image, imageIndex) => (
+            {productImages.map((image: string, imageIndex: number) => (
               <img
                 key={`${product.id}-${imageIndex}`}
                 src={image}
@@ -444,7 +383,7 @@ export default function Home() {
                 <i className="fa-solid fa-chevron-right"></i>
               </button>
               <div className="carousel-dots">
-                {productImages.map((_, imageIndex) => (
+                {productImages.map((_: string, imageIndex: number) => (
                   <button
                     key={`${product.id}-dot-${imageIndex}`}
                     type="button"
@@ -470,110 +409,47 @@ export default function Home() {
               confirmAddToCart(Number(product.id), {
                 color: colors[0],
                 size: sizes[0],
-                quantity: 1,
               });
             }}
           >
-            <i className="fa-solid fa-plus"></i>
+            <i className="fa-solid fa-cart-plus"></i>
           </button>
         </div>
         <div className="product-info">
-          <p className="title">{product.name}</p>
-          {product.badge && <p className="badge">{product.badge}</p>}
-          <p className="price">
-            RWF<span className="big-price">{Number(product.price).toFixed(2)}</span>
-            {product.original_price && <span className="original-price">RWF{Number(product.original_price).toFixed(2)}</span>}
-            <span className="sold">{product.sold || 0}+ sold</span>
-          </p>
+          <div className="title">{product.name}</div>
+          <div className="price">RWF{Number(product.price).toFixed(2)}</div>
+          {product.original_price && <div className="original-price">RWF{Number(product.original_price).toFixed(2)}</div>}
+          <div className="badge">{product.badge}</div>
         </div>
       </div>
     );
   };
-
-  // Avoid hydration mismatch by waiting for mount
-  if (!isMounted) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="loading">
-          <LoadingDots label="Loading" size="lg" />
-        </div>
-      </div>
-    );
-  }
 
   const detailImages = normalizeProductImages(selectedProduct);
   const activeDetailImageIndex = detailImages.length > 0 ? Math.min(detailImageIndex, detailImages.length - 1) : -1;
 
   return (
     <>
-      <div id="trend-slideshow" className="trend-slideshow active" onClick={() => router.push('/trend')} style={{ cursor: 'pointer' }}>
-        <div className="slideshow-container" style={{ overflow: 'hidden' }}>
-          <div
-            className="slideshow-wrapper"
-            id="slideshow-wrapper"
-            style={{
-              transform: `translateX(-${currentSlide * 100}%)`,
-              display: 'flex',
-              transition: 'transform 0.5s ease-in-out'
-            }}
-          >
-            {trendProducts.length > 0 ? trendProducts.map((p, idx) => (
-              <div className="slide" key={p.id} style={{ minWidth: '100%', flexShrink: 0 }}>
-                {resolveProductImagePath(p.image) ? (
-                  <img src={resolveProductImagePath(p.image)} alt={p.name} className="slide-image" />
-                ) : (
-                  <div className="slide-image" />
-                )}
-                <div className="slide-overlay">
-                  <div className="slide-product-info">
-                    {p.badge && <span className="slide-product-badge">{p.badge}</span>}
-                    <h3 className="slide-product-name">{p.name}</h3>
-                  </div>
-                  <span className="slide-product-price">RWF{Number(p.price).toFixed(2)}</span>
-                </div>
-              </div>
-            )) : (
-              <div className="slide" style={{ minWidth: '100%' }}>
-                <div className="loading" style={{ color: 'white', marginTop: '100px' }}>
-                  <LoadingDots label="Loading" className="dot-loader--inverse" />
-                </div>
-              </div>
-            )}
-          </div>
-          <div className="slideshow-nav" id="slideshow-dots">
-            {trendProducts.map((_, idx) => (
-              <span
-                key={idx}
-                className={`dot ${currentSlide === idx ? 'active' : ''}`}
-                onClick={() => setCurrentSlide(idx)}
-                style={{
-                  height: '10px',
-                  width: '10px',
-                  margin: '0 5px',
-                  backgroundColor: currentSlide === idx ? '#ff4757' : '#bbb',
-                  borderRadius: '50%',
-                  display: 'inline-block',
-                  cursor: 'pointer',
-                  transition: 'background-color 0.3s ease'
-                }}
-              ></span>
-            ))}
-          </div>
+      <main className="product-grid" id="product-grid">
+        <div className="page-header">
+          <h1>Trending Products</h1>
+          <p>Discover the most popular items in ShopCorner</p>
         </div>
-      </div>
 
-      <main className="product-grid slideshow-visible" id="product-grid">
         {loadingProducts ? (
           <div className="loading">
             <LoadingDots label="Loading" size="lg" />
           </div>
-        ) : products.length > 0 ? (
-          products.map(renderProductCard)
+        ) : trendProducts.length > 0 ? (
+          trendProducts.map((product: Product, index: number) => renderProductCard(product, index))
         ) : (
-          <div className="no-products">No products found.</div>
+          <div className="no-products">
+            <p>No trending products available at the moment.</p>
+          </div>
         )}
       </main>
 
+      {/* Cart Modal */}
       {isCartOpen && (
         <div id="cart-modal" className="cart-modal" style={{ display: 'flex' }}>
           <div className="cart-modal-content">
@@ -596,42 +472,48 @@ export default function Home() {
                       <h4>{item.name}</h4>
                       <p className="cart-item-price">RWF{Number(item.price).toFixed(2)}</p>
                       <p className="cart-item-quantity">Qty: {item.quantity}</p>
+                      {item.color && <small>Color: {item.color}</small>}
+                      {item.size && <small>Size: {item.size}</small>}
                     </div>
                     <button className="remove-from-cart" title="Remove" onClick={() => removeFromCart(item.cart_id)}>
                       <i className="fa-solid fa-trash"></i>
                     </button>
                   </div>
                 )) : (
-                  <div className="empty-cart">Your cart is empty</div>
+                  <div className="empty-cart">
+                    <i className="fa-solid fa-shopping-cart"></i>
+                    <p>Your cart is empty</p>
+                  </div>
                 )}
               </div>
             </div>
-            <div className="cart-modal-footer">
-              <div className="cart-total-display">
-                Total: <span id="cart-total-amount">RWF {cartTotal}</span>
+            {cartItems.length > 0 && (
+              <div className="cart-modal-footer">
+                <div className="cart-total-display">
+                  Total: <span id="cart-total-amount">RWF {cartTotal}</span>
+                </div>
+                <button
+                  id="place-order-btn"
+                  className="checkout-btn"
+                  disabled={cartItems.length === 0 || placingOrder}
+                  onClick={placeOrder}
+                >
+                  {placingOrder ? <LoadingDots label="Placing Order" size="sm" /> : 'Place Order'}
+                </button>
               </div>
-              <button
-                id="place-order-btn"
-                className="checkout-btn"
-                disabled={cartItems.length === 0 || placingOrder}
-                onClick={placeOrder}
-              >
-                {placingOrder ? (
-                  <LoadingDots label="Loading" size="sm" className="dot-loader--inverse dot-loader--button" />
-                ) : 'Place Order'}
-              </button>
-            </div>
+            )}
           </div>
         </div>
       )}
 
+      {/* Product Detail Modal */}
       {selectedProduct && (
         <div id="product-detail-modal" className={`product-detail-modal ${selectedProduct ? 'show' : ''}`} style={{ display: 'flex' }}>
           <div className="product-detail-overlay" onClick={closeProductDetail}></div>
           <div className="product-detail-content">
             <div className="mobile-detail-nav">
               <button className="detail-back-btn" onClick={closeProductDetail}>
-                <i className="fa-solid fa-arrow-left"></i> Home
+                <i className="fa-solid fa-arrow-left"></i> Back
               </button>
               <div className="header-icons" style={{ paddingRight: '5px' }}>
                 <div className="cart-icon" onClick={openCart}>
@@ -670,7 +552,7 @@ export default function Home() {
                       );
                     }}
                   >
-                    {detailImages.map((image, imageIndex) => (
+                    {detailImages.map((image: string, imageIndex: number) => (
                       <img
                         key={`${selectedProduct.id}-${imageIndex}`}
                         src={image}
@@ -697,7 +579,7 @@ export default function Home() {
                           <i className="fa-solid fa-chevron-right"></i>
                         </button>
                         <div className="detail-carousel-dots">
-                          {detailImages.map((_, imageIndex) => (
+                          {detailImages.map((_: string, imageIndex: number) => (
                             <button
                               key={`${selectedProduct.id}-detail-dot-${imageIndex}`}
                               type="button"

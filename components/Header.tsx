@@ -335,9 +335,6 @@ export default function Header() {
             <button type="button" className="search-toggle search-button" id="search-toggle" onClick={openSearch} aria-label="Open search">
               <i className="fa-solid fa-magnifying-glass"></i>
             </button>
-            <Link href="/favorites" className="header-action">
-              <i className="fa-regular fa-heart"></i>
-            </Link>
             <div
               className="cart-icon"
               onClick={() => window.dispatchEvent(new CustomEvent('openCart'))}
@@ -365,7 +362,7 @@ export default function Header() {
           <div className="side-menu-body">
             <ul className="side-nav-list">
               <li><Link href="/" onClick={closeSidebar}>Home</Link></li>
-              <li><a href="#" onClick={closeSidebar}>Trend</a></li>
+              <li><Link href="/trend" onClick={closeSidebar}>Trend</Link></li>
               <li><Link href="/contact" onClick={closeSidebar}>Contact</Link></li>
               <li><Link href="/help" onClick={closeSidebar}>Help</Link></li>
               <li className="separator"></li>
