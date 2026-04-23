@@ -5,6 +5,7 @@ import { createClient } from '@supabase/supabase-js';
 // Create a service role client for admin operations
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
 
 if (!supabaseUrl || !supabaseServiceRoleKey) {
   throw new Error('Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variable');
@@ -25,6 +26,11 @@ function isEmailDeliveryError(message?: string | null) {
   if (!message) return false;
   const msg = message.toLowerCase();
   return msg.includes('error sending confirmation email') || msg.includes('error sending email');
+}
+
+function getEmailRedirectUrl(req: NextRequest) {
+  const baseUrl = siteUrl?.trim() || req.nextUrl.origin;
+  return new URL('/auth/callback', baseUrl).toString();
 }
 
 export async function GET(req: NextRequest) {
@@ -162,7 +168,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const emailRedirectTo = new URL('/auth/callback', req.nextUrl.origin).toString();
+      const emailRedirectTo = getEmailRedirectUrl(req);
 
       // Sign up with Supabase Auth and trigger email confirmation.
       const { data: authData, error: signUpError } = await supabase.auth.signUp({
