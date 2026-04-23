@@ -72,6 +72,21 @@ export async function safeFetch<T>(endpoint: string, options: RequestInit = {}):
 }
 
 // Helpers for auth
+export function storeAuthSession(session: unknown) {
+  if (typeof window === 'undefined' || !session) return;
+  localStorage.setItem(LOCAL_AUTH_SESSION, JSON.stringify(session));
+}
+
+export function storeAuthUser(user: unknown) {
+  if (typeof window === 'undefined' || !user) return;
+  localStorage.setItem(LOCAL_USER_INFO, JSON.stringify(user));
+}
+
+export function storeAuthState(session: unknown, user: unknown) {
+  storeAuthSession(session);
+  storeAuthUser(user);
+}
+
 export function getStoredUser() {
   if (typeof window === 'undefined') return null;
   try {
@@ -87,28 +102,64 @@ export function handleLogoutLocal() {
   localStorage.removeItem(LOCAL_USER_INFO);
 }
 
+export async function getCurrentUserWithToken(accessToken: string) {
+  const response = await fetch('/api/auth', {
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'X-Requested-With': 'XMLHttpRequest',
+      'X-Session-Id': getSessionId(),
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load user: ${response.status}`);
+  }
+
+  const result = await response.json() as { success: boolean; isLoggedIn: boolean; user?: any };
+  if (result.success && result.isLoggedIn && result.user) {
+    storeAuthUser(result.user);
+    return result.user;
+  }
+
+  handleLogoutLocal();
+  return null;
+}
+
 export async function login(email: string, password: string) {
   const response = await safeFetch<{ success: boolean; session?: any; user?: any; redirect?: string; message?: string }>('/auth', {
     method: 'POST',
     body: JSON.stringify({ email, password, mode: 'login' }),
   });
   if (response.success && response.session && response.user) {
-    localStorage.setItem(LOCAL_AUTH_SESSION, JSON.stringify(response.session));
-    localStorage.setItem(LOCAL_USER_INFO, JSON.stringify(response.user));
+    storeAuthState(response.session, response.user);
     return { success: true, redirect: response.redirect };
   }
   return { success: false, message: response.message };
 }
 
 export async function signup(email: string, password: string, full_name: string, phone: string, address: string) {
-  const response = await safeFetch<{ success: boolean; session?: any; user?: any; redirect?: string; message?: string }>('/auth', {
+  const response = await safeFetch<{
+    success: boolean;
+    session?: any;
+    user?: any;
+    redirect?: string;
+    message?: string;
+    requiresEmailVerification?: boolean;
+  }>('/auth', {
     method: 'POST',
     body: JSON.stringify({ email, password, full_name, phone, address, mode: 'signup' }),
   });
   if (response.success && response.session && response.user) {
-    localStorage.setItem(LOCAL_AUTH_SESSION, JSON.stringify(response.session));
-    localStorage.setItem(LOCAL_USER_INFO, JSON.stringify(response.user));
+    storeAuthState(response.session, response.user);
     return { success: true, redirect: response.redirect };
+  }
+  if (response.success && response.requiresEmailVerification) {
+    return {
+      success: true,
+      redirect: '/auth/callback',
+      message: response.message,
+      requiresEmailVerification: true,
+    };
   }
   return { success: false, message: response.message };
 }

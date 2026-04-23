@@ -33,6 +33,7 @@ export interface User {
   phone?: string;
   address?: string;
   role?: string;
+  email_confirmed_at?: string | null;
 }
 
 export interface AuthSession {

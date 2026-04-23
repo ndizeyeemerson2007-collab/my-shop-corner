@@ -21,6 +21,12 @@ function isExistingAuthUserError(message?: string | null) {
   return msg.includes('user already exists') || msg.includes('already been registered');
 }
 
+function isEmailDeliveryError(message?: string | null) {
+  if (!message) return false;
+  const msg = message.toLowerCase();
+  return msg.includes('error sending confirmation email') || msg.includes('error sending email');
+}
+
 export async function GET(req: NextRequest) {
   try {
     const authHeader = req.headers.get('authorization');
@@ -156,54 +162,49 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Sign up with Supabase Auth using admin API
-      const { data: authData, error: signUpError } = await supabaseAdmin.auth.admin.createUser({
+      const emailRedirectTo = new URL('/auth/callback', req.nextUrl.origin).toString();
+
+      // Sign up with Supabase Auth and trigger email confirmation.
+      const { data: authData, error: signUpError } = await supabase.auth.signUp({
         email,
         password,
-        email_confirm: true, // Auto-confirm email
+        options: {
+          emailRedirectTo,
+          data: {
+            full_name: fullName,
+            phone,
+            address,
+          },
+        },
       });
 
       if (signUpError || !authData.user) {
         console.error('Signup error:', signUpError);
         if (isExistingAuthUserError(signUpError?.message)) {
-          // Account exists in Supabase Auth. Validate credentials directly with Supabase,
-          // then recover missing profile row in users table if needed.
-          const { data: existingSignInData, error: existingSignInError } = await supabase.auth.signInWithPassword({
-            email,
-            password,
-          });
-
-          if (existingSignInError || !existingSignInData.user || !existingSignInData.session) {
-            return NextResponse.json(
-              { success: false, message: 'Email already registered. Use the correct password to continue.' },
-              { status: 409 }
-            );
-          }
-
-          const { profile, error: recoveredProfileError } = await ensureUserProfile(
-            existingSignInData.user.id,
-            existingSignInData.user.email || email,
-            { full_name: fullName, phone, address, role: 'user' }
+          return NextResponse.json(
+            { success: false, message: 'Email already registered. Please sign in instead.' },
+            { status: 409 }
           );
-
-          if (recoveredProfileError || !profile) {
-            return NextResponse.json(
-              { success: false, message: 'Account exists but profile recovery failed.' },
-              { status: 500 }
-            );
-          }
-
-          const redirect = profile.role === 'admin' ? '/admin' : '/profile';
-          return NextResponse.json({
-            success: true,
-            session: existingSignInData.session,
-            user: { ...existingSignInData.user, ...profile },
-            redirect,
-          });
+        }
+        if (isEmailDeliveryError(signUpError?.message)) {
+          return NextResponse.json(
+            {
+              success: false,
+              message: 'Verification email could not be sent. Check your Supabase SMTP settings and Gmail app password, then try again.',
+            },
+            { status: 502 }
+          );
         }
         return NextResponse.json(
           { success: false, message: signUpError?.message || 'Failed to create account' },
           { status: 500 }
+        );
+      }
+
+      if (!authData.user.identities?.length) {
+        return NextResponse.json(
+          { success: false, message: 'Email already registered. Please sign in instead.' },
+          { status: 409 }
         );
       }
 
@@ -224,27 +225,12 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Sign in the user to get a session after successful creation.
-      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (signInError || !signInData.session) {
-        console.error('Auto sign-in error:', signInError);
-        return NextResponse.json({
-          success: true,
-          user: newUser,
-          redirect: '/profile',
-          session: null,
-        });
-      }
-
       return NextResponse.json({
         success: true,
-        session: signInData.session,
         user: newUser,
-        redirect: '/profile',
+        session: null,
+        requiresEmailVerification: true,
+        message: 'Check your email to verify your account',
       });
     }
 
@@ -256,8 +242,11 @@ export async function POST(req: NextRequest) {
 
     if (signInError || !signInData.user) {
       console.error('Login error:', signInError);
+      const loginMessage = signInError?.message?.toLowerCase().includes('email not confirmed')
+        ? 'Please verify your email before signing in'
+        : 'Invalid email or password';
       return NextResponse.json(
-        { success: false, message: 'Invalid email or password' },
+        { success: false, message: loginMessage },
         { status: 401 }
       );
     }
@@ -277,7 +266,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const redirect = userProfile?.role === 'admin' ? '/admin' : '/profile';
+    const redirect = userProfile?.role === 'admin' ? '/admin' : '/dashboard';
 
     return NextResponse.json({
       success: true,

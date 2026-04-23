@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import LoadingDots from '../../components/LoadingDots';
+import { handleLogoutLocal, storeAuthState } from '../../services/api';
 
 export default function LoginPage() {
   const [mode, setMode] = useState<'login' | 'signup'>('login');
@@ -15,11 +16,13 @@ export default function LoginPage() {
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
   const router = useRouter();
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
-    setError(''); // Clear error when user types
+    setError('');
+    setSuccessMessage('');
   };
 
   const validateForm = (): boolean => {
@@ -54,6 +57,7 @@ export default function LoginPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setSuccessMessage('');
 
     if (!validateForm()) {
       return;
@@ -62,8 +66,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       // Clear stale local auth before asking server for fresh auth state
-      localStorage.removeItem('supabase_session');
-      localStorage.removeItem('shopcorner_user');
+      handleLogoutLocal();
 
       const response = await fetch('/api/auth', {
         method: 'POST',
@@ -74,26 +77,35 @@ export default function LoginPage() {
       const data = await response.json();
 
       if (data.success) {
+        if (mode === 'signup' && data.requiresEmailVerification) {
+          setSuccessMessage(data.message || 'Check your email to verify your account');
+          setMode('login');
+          setFormData((current) => ({
+            ...current,
+            password: '',
+          }));
+          return;
+        }
+
         // Store Supabase session
-        if (data.session) {
-          localStorage.setItem('supabase_session', JSON.stringify(data.session));
+        if (data.session && data.user) {
+          storeAuthState(data.session, data.user);
         }
-        // Store user data
-        if (data.user) {
-          localStorage.setItem('shopcorner_user', JSON.stringify(data.user));
+
+        if (data.session && data.user) {
+          window.dispatchEvent(new CustomEvent('userLogin'));
+          const shouldOpenCartAfterLogin = localStorage.getItem('shopcorner_open_cart_after_login') === '1';
+          if (shouldOpenCartAfterLogin) {
+            router.push('/');
+          } else {
+            router.push(data.redirect || '/dashboard');
+          }
+          return;
         }
-        // Dispatch custom event to update Header
-        window.dispatchEvent(new CustomEvent('userLogin'));
-        // Redirect
-        const shouldOpenCartAfterLogin = localStorage.getItem('shopcorner_open_cart_after_login') === '1';
-        if (shouldOpenCartAfterLogin) {
-          router.push('/');
-        } else {
-          router.push(data.redirect || '/profile');
-        }
+
+        setSuccessMessage(data.message || 'Request completed successfully');
       } else {
-        localStorage.removeItem('supabase_session');
-        localStorage.removeItem('shopcorner_user');
+        handleLogoutLocal();
         window.dispatchEvent(new CustomEvent('userLogout'));
         setError(data.message || 'An error occurred');
       }
@@ -108,6 +120,7 @@ export default function LoginPage() {
   const toggleMode = () => {
     setMode(mode === 'login' ? 'signup' : 'login');
     setError('');
+    setSuccessMessage('');
     setFormData({
       email: '',
       password: '',
@@ -132,6 +145,7 @@ export default function LoginPage() {
         </div>
 
         {error && <div className="auth-error">{error}</div>}
+        {successMessage && <div className="auth-success">{successMessage}</div>}
 
         <form onSubmit={handleSubmit} className="auth-form">
           <div className="field-group">

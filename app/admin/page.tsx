@@ -2,10 +2,12 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { getCurrentUserFromServer, handleLogoutLocal, safeFetch, resolveProductImagePath } from '../../services/api';
+import { handleLogoutLocal, safeFetch, resolveProductImagePath } from '../../services/api';
 import { Product, User } from '../../types';
 import { useConfirm } from '../../components/ConfirmProvider';
 import LoadingDots from '../../components/LoadingDots';
+import AuthStatusCard from '../../components/AuthStatusCard';
+import { useProtectedAuth } from '../../hooks/useProtectedAuth';
 
 type AdminSection = 'stats' | 'products' | 'upload' | 'orders';
 type AdminStats = {
@@ -42,14 +44,36 @@ type AdminOrder = {
   items?: AdminOrderItem[];
 };
 
+type OrderFilter = 'all' | 'pending' | 'paid' | 'processing' | 'canceled' | 'delivered';
+
+const defaultProductForm = {
+  name: '',
+  description: '',
+  price: '',
+  stock: '100',
+  category: '',
+  colors: '',
+  sizes: '',
+  badge: '',
+  sold: '0',
+  is_trend: false,
+  image: '',
+};
+
 export default function AdminPage() {
   const confirm = useConfirm();
+  const { loading, user: protectedUser, accessBlocked, message } = useProtectedAuth({ requiredRole: 'admin' });
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
   const [activeSection, setActiveSection] = useState<AdminSection | 'settings'>('stats');
   const [stats, setStats] = useState<AdminStats>({ revenue: 0, orders: 0, products: 0, trend_products: 0 });
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<AdminOrder[]>([]);
+  const [orderFilter, setOrderFilter] = useState<OrderFilter>('all');
+  const [orderSearch, setOrderSearch] = useState('');
+  const [orderDateFrom, setOrderDateFrom] = useState('');
+  const [orderDateTo, setOrderDateTo] = useState('');
+  const [showOrderFilterModal, setShowOrderFilterModal] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [orderListModal, setOrderListModal] = useState<AdminOrder | null>(null);
   const [customerInfoModal, setCustomerInfoModal] = useState<AdminOrder | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -59,43 +83,27 @@ export default function AdminPage() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [profileForm, setProfileForm] = useState({ full_name: '', phone: '', address: '' });
   const [profileOriginal, setProfileOriginal] = useState({ full_name: '', phone: '', address: '' });
-  const [form, setForm] = useState({
-    name: '',
-    description: '',
-    price: '',
-    stock: '100',
-    category: '',
-    colors: '',
-    sizes: '',
-    badge: '',
-    sold: '0',
-    is_trend: false,
-    image: '',
-  });
+  const [form, setForm] = useState(defaultProductForm);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const router = useRouter();
 
   useEffect(() => {
-    const loadUser = async () => {
-      setLoading(true);
-      const serverUser = await getCurrentUserFromServer();
-      if (!serverUser || serverUser.role !== 'admin') {
-        router.push('/login');
-        return;
-      }
-      const mappedProfile = {
-        full_name: serverUser.full_name || '',
-        phone: serverUser.phone || '',
-        address: serverUser.address || '',
-      };
-      setUser(serverUser);
-      setProfileForm(mappedProfile);
-      setProfileOriginal(mappedProfile);
-      await Promise.all([loadDashboardStats(), loadProducts(), loadOrders()]);
-      setLoading(false);
+    if (!protectedUser || accessBlocked) {
+      setUser(null);
+      return;
+    }
+
+    const mappedProfile = {
+      full_name: protectedUser.full_name || '',
+      phone: protectedUser.phone || '',
+      address: protectedUser.address || '',
     };
-    loadUser();
-  }, [router]);
+
+    setUser(protectedUser);
+    setProfileForm(mappedProfile);
+    setProfileOriginal(mappedProfile);
+    void Promise.all([loadDashboardStats(), loadProducts(), loadOrders()]);
+  }, [accessBlocked, protectedUser]);
 
   const loadDashboardStats = async () => {
     try {
@@ -130,6 +138,48 @@ export default function AdminPage() {
     }
   };
 
+  const resetProductForm = () => {
+    setForm(defaultProductForm);
+    setEditingProduct(null);
+    setImageFiles([]);
+    if (imageInputRef.current) {
+      imageInputRef.current.value = '';
+    }
+  };
+
+  const getProductImages = (product: Product | null) => {
+    if (!product) return [];
+    const gallery = Array.isArray(product.images)
+      ? product.images
+      : typeof product.images === 'string' && product.images
+        ? [product.images]
+        : [];
+    const allImages = [product.image, ...gallery].filter((value): value is string => Boolean(value));
+    return Array.from(new Set(allImages));
+  };
+
+  const normalizeOrderStatus = (status: string) => {
+    const normalized = String(status || 'pending').toLowerCase();
+    return normalized === 'cancelled' ? 'canceled' : normalized;
+  };
+
+  const orderSortPriority = (status: string) => {
+    switch (normalizeOrderStatus(status)) {
+      case 'pending':
+        return 0;
+      case 'paid':
+        return 1;
+      case 'processing':
+        return 2;
+      case 'canceled':
+        return 3;
+      case 'delivered':
+        return 4;
+      default:
+        return 5;
+    }
+  };
+
   const handleLogout = async () => {
     const confirmed = await confirm({
       title: 'Logout',
@@ -158,7 +208,13 @@ export default function AdminPage() {
     setActiveSection(section);
     setShowProfilePanel(false);
     if (section === 'products') await loadProducts();
-    if (section === 'orders') await loadOrders();
+    if (section === 'orders') {
+      setOrderFilter('all');
+      setOrderSearch('');
+      setOrderDateFrom('');
+      setOrderDateTo('');
+      await loadOrders();
+    }
     if (section === 'stats') await loadDashboardStats();
   };
 
@@ -171,26 +227,34 @@ export default function AdminPage() {
     e.preventDefault();
     setUploading(true);
     try {
-      if (imageFiles.length === 0) {
+      const isEditing = Boolean(editingProduct);
+      if (!isEditing && imageFiles.length === 0) {
         window.alert('Please choose at least one product image.');
         return;
       }
 
-      const uploadData = new FormData();
-      imageFiles.forEach((file) => uploadData.append('files', file));
+      let uploadedPaths: string[] = [];
+      if (imageFiles.length > 0) {
+        const uploadData = new FormData();
+        imageFiles.forEach((file) => uploadData.append('files', file));
 
-      const uploadResult = await safeFetch<{ success: boolean; message?: string; paths?: string[] }>('/api/upload', {
-        method: 'POST',
-        body: uploadData,
-      });
+        const uploadResult = await safeFetch<{ success: boolean; message?: string; paths?: string[] }>('/api/upload', {
+          method: 'POST',
+          body: uploadData,
+        });
 
-      const uploadedPaths = Array.isArray(uploadResult.paths) ? uploadResult.paths : [];
-      if (!uploadResult.success || uploadedPaths.length === 0) {
-        window.alert(uploadResult.message || 'Image upload failed.');
-        return;
+        uploadedPaths = Array.isArray(uploadResult.paths) ? uploadResult.paths : [];
+        if (!uploadResult.success || uploadedPaths.length === 0) {
+          window.alert(uploadResult.message || 'Image upload failed.');
+          return;
+        }
       }
 
+      const existingImages = getProductImages(editingProduct);
+      const finalImages = uploadedPaths.length > 0 ? uploadedPaths : existingImages;
+
       const payload = {
+        ...(editingProduct ? { id: editingProduct.id } : {}),
         name: form.name,
         description: form.description,
         price: Number(form.price),
@@ -201,36 +265,20 @@ export default function AdminPage() {
         badge: form.badge,
         sold: Number(form.sold),
         is_trend: form.is_trend,
-        image: uploadedPaths[0],
-        images: uploadedPaths,
+        image: finalImages[0] || '',
+        images: finalImages,
       };
       const result = await safeFetch<{ success: boolean; message?: string }>('/api/products', {
-        method: 'POST',
+        method: editingProduct ? 'PATCH' : 'POST',
         body: JSON.stringify(payload),
       });
       if (result.success) {
-        window.alert('Product saved successfully.');
-        setForm({
-          name: '',
-          description: '',
-          price: '',
-          stock: '100',
-          category: '',
-          colors: '',
-          sizes: '',
-          badge: '',
-          sold: '0',
-          is_trend: false,
-          image: '',
-        });
-        setImageFiles([]);
-        if (imageInputRef.current) {
-          imageInputRef.current.value = '';
-        }
+        window.alert(editingProduct ? 'Product updated successfully.' : 'Product saved successfully.');
+        resetProductForm();
         await Promise.all([loadProducts(), loadDashboardStats()]);
         setActiveSection('products');
       } else {
-        window.alert(result.message || 'Failed to save product.');
+        window.alert(result.message || `Failed to ${editingProduct ? 'update' : 'save'} product.`);
       }
     } catch (err: any) {
       window.alert(err?.message || 'Network error.');
@@ -242,6 +290,29 @@ export default function AdminPage() {
   const handleImageSelection = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     setImageFiles(files);
+  };
+
+  const handleEditProduct = (product: Product) => {
+    setEditingProduct(product);
+    setForm({
+      name: product.name || '',
+      description: product.description || '',
+      price: String(product.price ?? ''),
+      stock: String(product.stock ?? 0),
+      category: product.category || '',
+      colors: product.colors || '',
+      sizes: product.sizes || '',
+      badge: product.badge || '',
+      sold: String(product.sold ?? 0),
+      is_trend: Boolean(product.is_trend),
+      image: product.image || '',
+    });
+    setImageFiles([]);
+    if (imageInputRef.current) {
+      imageInputRef.current.value = '';
+    }
+    setActiveSection('upload');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleDeleteProduct = async (id: number) => {
@@ -342,19 +413,91 @@ export default function AdminPage() {
 
   if (loading) {
     return (
-      <div className="profile-loading">
-        <LoadingDots label="Loading" size="lg" />
-      </div>
+      <AuthStatusCard
+        title="Loading admin area"
+        message="Checking your account before we open the dashboard."
+        loading
+      />
+    );
+  }
+
+  if (accessBlocked) {
+    return (
+      <AuthStatusCard
+        title="Access blocked"
+        message={message}
+      />
     );
   }
 
   if (!user) {
-    return (
-      <div className="profile-loading">
-        <LoadingDots label="Loading" size="lg" />
-      </div>
-    );
+    return null;
   }
+
+  const sortedOrders = [...orders].sort((a, b) => {
+    const priorityDiff = orderSortPriority(a.status) - orderSortPriority(b.status);
+    if (priorityDiff !== 0) return priorityDiff;
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  });
+
+  const visibleOrders =
+    sortedOrders.filter((order) => {
+      const matchesStatus =
+        orderFilter === 'all' ? true : normalizeOrderStatus(order.status) === orderFilter;
+
+      const searchValue = orderSearch.trim().toLowerCase();
+      const searchableText = [
+        `order ${order.id}`,
+        order.full_name,
+        order.phone,
+        order.location,
+        order.customer_email,
+        order.customer?.full_name,
+        order.customer?.phone,
+        order.customer?.email,
+        order.customer?.address,
+        ...(order.items || []).map((item) => item.product_name),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+
+      const matchesSearch = searchValue ? searchableText.includes(searchValue) : true;
+
+      const orderDate = new Date(order.created_at);
+      const matchesDateFrom = orderDateFrom
+        ? orderDate >= new Date(`${orderDateFrom}T00:00:00`)
+        : true;
+      const matchesDateTo = orderDateTo
+        ? orderDate <= new Date(`${orderDateTo}T23:59:59`)
+        : true;
+
+      return matchesStatus && matchesSearch && matchesDateFrom && matchesDateTo;
+    });
+
+  const orderFilters: Array<{ value: OrderFilter; label: string }> = [
+    { value: 'all', label: 'All' },
+    { value: 'pending', label: 'Pending' },
+    { value: 'paid', label: 'Paid' },
+    { value: 'processing', label: 'Processing' },
+    { value: 'canceled', label: 'Canceled' },
+    { value: 'delivered', label: 'Delivered' },
+  ];
+
+  const orderCounts = orderFilters.reduce<Record<OrderFilter, number>>((acc, filter) => {
+    acc[filter.value] =
+      filter.value === 'all'
+        ? orders.length
+        : orders.filter((order) => normalizeOrderStatus(order.status) === filter.value).length;
+    return acc;
+  }, {
+    all: 0,
+    pending: 0,
+    paid: 0,
+    processing: 0,
+    canceled: 0,
+    delivered: 0,
+  });
 
   return (
     <main className="admin-page-shell">
@@ -399,6 +542,14 @@ export default function AdminPage() {
                   <small>Stock: {p.stock || 0} | RWF {Number(p.price || 0).toLocaleString()}</small>
                 </div>
                 <div className="admin-card-actions">
+                  <button
+                    type="button"
+                    title="Edit"
+                    className="admin-card-action-edit"
+                    onClick={() => handleEditProduct(p)}
+                  >
+                    <i className="fa-solid fa-pen-to-square"></i>
+                  </button>
                   <button title="Delete" onClick={() => handleDeleteProduct(Number(p.id))}>
                     <i className="fa-solid fa-trash"></i>
                   </button>
@@ -411,7 +562,7 @@ export default function AdminPage() {
 
       <section className={`admin-sec ${activeSection === 'upload' ? '' : 'admin-hidden'}`}>
         <form className="admin-card" onSubmit={handleAddProduct}>
-          <h3 className="admin-sec-title">Add New Product</h3>
+          <h3 className="admin-sec-title">{editingProduct ? `Edit Product #${editingProduct.id}` : 'Add New Product'}</h3>
 
           <label className="adm-label">Product Name</label>
           <input className="adm-input" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
@@ -439,13 +590,25 @@ export default function AdminPage() {
             type="file"
             accept="image/*"
             multiple
-            required
+            required={!editingProduct}
             className="adm-input"
             onChange={handleImageSelection}
           />
           <p className="admin-upload-help">
-            Choose one or many images from the device. The first image becomes the main image.
+            {editingProduct
+              ? 'Choose new image files only if you want to replace the current product images.'
+              : 'Choose one or many images from the device. The first image becomes the main image.'}
           </p>
+          {editingProduct && getProductImages(editingProduct).length > 0 ? (
+            <div className="admin-upload-list">
+              {getProductImages(editingProduct).map((imagePath, index) => (
+                <div key={`${imagePath}-${index}`} className="admin-upload-item">
+                  <span>Current image {index + 1}</span>
+                  {index === 0 ? <strong>Main image</strong> : <small>Gallery image</small>}
+                </div>
+              ))}
+            </div>
+          ) : null}
           {imageFiles.length > 0 ? (
             <div className="admin-upload-list">
               {imageFiles.map((file, index) => (
@@ -484,24 +647,61 @@ export default function AdminPage() {
             Trend Product?
           </label>
 
-          <button className="adm-btn" type="submit" disabled={uploading}>
-            {uploading ? (
-              <LoadingDots label="Loading" size="sm" className="dot-loader--inverse dot-loader--button" />
-            ) : 'Save Product'}
-          </button>
+          <div className="admin-product-form-actions">
+            {editingProduct ? (
+              <button type="button" className="btn-discard-outline profile-btn-visible" onClick={resetProductForm}>
+                Cancel Edit
+              </button>
+            ) : null}
+            <button className="adm-btn" type="submit" disabled={uploading}>
+              {uploading ? (
+                <LoadingDots label="Loading" size="sm" className="dot-loader--inverse dot-loader--button" />
+              ) : editingProduct ? 'Update Product' : 'Save Product'}
+            </button>
+          </div>
         </form>
       </section>
 
       <section className={`admin-sec ${activeSection === 'orders' ? '' : 'admin-hidden'}`}>
         <h3 className="admin-sec-title">Recent Orders</h3>
+        {orders.length > 0 ? (
+          <div className="admin-order-filter-bar">
+            <div className="admin-order-filter-top">
+              <div className="admin-order-filters" aria-label="Filter orders by status">
+                {orderFilters.map((filter) => (
+                <button
+                  key={filter.value}
+                  type="button"
+                  className={`admin-order-filter-chip ${orderFilter === filter.value ? 'active' : ''}`}
+                  onClick={() => setOrderFilter(filter.value)}
+                >
+                  <span>{filter.label}</span>
+                  <strong>{orderCounts[filter.value]}</strong>
+                </button>
+              ))}
+            </div>
+
+              <button
+                type="button"
+                className="admin-order-filter-open"
+                onClick={() => setShowOrderFilterModal(true)}
+              >
+                <i className="fa-solid fa-sliders"></i>
+                Filter
+              </button>
+            </div>
+          </div>
+        ) : null}
         {orders.length === 0 ? (
           <div className="admin-card">No orders found yet.</div>
+        ) : visibleOrders.length === 0 ? (
+          <div className="admin-card">No {orderFilter} orders found.</div>
         ) : (
-          orders.map((o) => (
+          visibleOrders.map((o) => (
             <div key={o.id} className="admin-card admin-order-card">
               <div className="admin-order-top">
                 <h4>Order #{o.id}</h4>
-                <span>{String(o.status || 'pending').toUpperCase()}</span>
+                <span>{normalizeOrderStatus(o.status).toUpperCase()}</span>
               </div>
               <p>{new Date(o.created_at).toLocaleString()}</p>
               <p>Products Total: RWF {Number(o.total_amount || 0).toLocaleString()}</p>
@@ -509,9 +709,9 @@ export default function AdminPage() {
               <p className="admin-order-grand-total">Grand Total: RWF {getOrderGrandTotal(o).toLocaleString()}</p>
               <div className="status-line">
                 <div className="step completed"><div className="step-icon"><i className="fa-solid fa-receipt"></i></div><span>Placed</span></div>
-                <div className={`step ${['paid', 'processing', 'delivered'].includes(String(o.status || '').toLowerCase()) ? 'completed' : ''}`}><div className="step-icon"><i className="fa-solid fa-credit-card"></i></div><span>Paid</span></div>
-                <div className={`step ${['processing', 'delivered'].includes(String(o.status || '').toLowerCase()) ? 'completed' : ''}`}><div className="step-icon"><i className="fa-solid fa-box-open"></i></div><span>Processing</span></div>
-                <div className={`step ${String(o.status || '').toLowerCase() === 'delivered' ? 'completed' : ''}`}><div className="step-icon"><i className="fa-solid fa-truck-fast"></i></div><span>Delivered</span></div>
+                <div className={`step ${['paid', 'processing', 'delivered'].includes(normalizeOrderStatus(o.status)) ? 'completed' : ''}`}><div className="step-icon"><i className="fa-solid fa-credit-card"></i></div><span>Paid</span></div>
+                <div className={`step ${['processing', 'delivered'].includes(normalizeOrderStatus(o.status)) ? 'completed' : ''}`}><div className="step-icon"><i className="fa-solid fa-box-open"></i></div><span>Processing</span></div>
+                <div className={`step ${normalizeOrderStatus(o.status) === 'delivered' ? 'completed' : ''}`}><div className="step-icon"><i className="fa-solid fa-truck-fast"></i></div><span>Delivered</span></div>
               </div>
 
               <div className="admin-order-actions-row">
@@ -527,7 +727,7 @@ export default function AdminPage() {
                 <label htmlFor={`order-status-${o.id}`}>Update Status</label>
                 <select
                   id={`order-status-${o.id}`}
-                  value={String(o.status || 'pending').toLowerCase()}
+                  value={normalizeOrderStatus(o.status)}
                   onChange={(e) => updateOrderStatus(o.id, e.target.value)}
                 >
                   <option value="pending">Pending</option>
@@ -541,6 +741,80 @@ export default function AdminPage() {
           ))
         )}
       </section>
+
+      {showOrderFilterModal ? (
+        <div className="admin-detail-overlay" onClick={() => setShowOrderFilterModal(false)}>
+          <div className="admin-detail-modal admin-order-filter-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="admin-order-filter-modal-head">
+              <div>
+                <h4>Filter Orders</h4>
+                <p>Search by name, date, phone, product, or order details.</p>
+              </div>
+              <button
+                type="button"
+                className="logout-btn"
+                onClick={() => setShowOrderFilterModal(false)}
+                aria-label="Close filter modal"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+
+            <div className="admin-order-filter-grid">
+              <label className="admin-order-filter-field">
+                <span>Search</span>
+                <input
+                  type="text"
+                  value={orderSearch}
+                  onChange={(e) => setOrderSearch(e.target.value)}
+                  placeholder="Order ID, name, phone, product..."
+                />
+              </label>
+
+              <label className="admin-order-filter-field">
+                <span>From</span>
+                <input
+                  type="date"
+                  value={orderDateFrom}
+                  onChange={(e) => setOrderDateFrom(e.target.value)}
+                />
+              </label>
+
+              <label className="admin-order-filter-field">
+                <span>To</span>
+                <input
+                  type="date"
+                  value={orderDateTo}
+                  onChange={(e) => setOrderDateTo(e.target.value)}
+                />
+              </label>
+            </div>
+
+            <div className="admin-order-filter-modal-actions">
+              <button
+                type="button"
+                className="admin-order-filter-reset"
+                onClick={() => {
+                  setOrderFilter('all');
+                  setOrderSearch('');
+                  setOrderDateFrom('');
+                  setOrderDateTo('');
+                }}
+              >
+                Reset
+              </button>
+
+              <button
+                type="button"
+                className="adm-btn admin-order-filter-apply"
+                onClick={() => setShowOrderFilterModal(false)}
+              >
+                Apply Filters
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <section className={`admin-sec ${activeSection === 'settings' ? '' : 'admin-hidden'}`}>
         <div className="settings-top-card admin-card">

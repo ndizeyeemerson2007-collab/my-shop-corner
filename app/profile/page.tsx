@@ -2,10 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getCurrentUserFromServer, handleLogoutLocal, safeFetch } from '../../services/api';
+import { handleLogoutLocal, safeFetch } from '../../services/api';
 import { User } from '../../types';
 import { useConfirm } from '../../components/ConfirmProvider';
 import LoadingDots from '../../components/LoadingDots';
+import AuthStatusCard from '../../components/AuthStatusCard';
+import { useProtectedAuth } from '../../hooks/useProtectedAuth';
 
 type UserOrder = {
   id: number;
@@ -32,8 +34,8 @@ type SettingsPanel = 'overview' | 'profile' | 'password';
 export default function ProfilePage() {
   const confirm = useConfirm();
   const router = useRouter();
+  const { loading, user: protectedUser, accessBlocked, message } = useProtectedAuth();
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'dash' | 'orders' | 'settings'>('dash');
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanel>('overview');
   const [savingProfile, setSavingProfile] = useState(false);
@@ -49,29 +51,22 @@ export default function ProfilePage() {
   });
 
   useEffect(() => {
-    const loadUser = async () => {
-      setLoading(true);
-      const serverUser = await getCurrentUserFromServer();
-      if (!serverUser) {
-        router.push('/login');
-        return;
-      }
+    if (!protectedUser || accessBlocked) {
+      setUser(null);
+      return;
+    }
 
-      const mapped = {
-        full_name: serverUser.full_name || '',
-        phone: serverUser.phone || '',
-        address: serverUser.address || '',
-      };
-
-      setUser(serverUser);
-      setProfileForm(mapped);
-      setProfileOriginal(mapped);
-      await loadOrders();
-      setLoading(false);
+    const mapped = {
+      full_name: protectedUser.full_name || '',
+      phone: protectedUser.phone || '',
+      address: protectedUser.address || '',
     };
 
-    loadUser();
-  }, [router]);
+    setUser(protectedUser);
+    setProfileForm(mapped);
+    setProfileOriginal(mapped);
+    loadOrders();
+  }, [accessBlocked, protectedUser]);
 
   const loadOrders = async () => {
     try {
@@ -225,18 +220,25 @@ export default function ProfilePage() {
 
   if (loading) {
     return (
-      <div className="profile-loading">
-        <LoadingDots label="Loading" size="lg" />
-      </div>
+      <AuthStatusCard
+        title="Loading your dashboard"
+        message="Checking your account before we load your profile."
+        loading
+      />
+    );
+  }
+
+  if (accessBlocked) {
+    return (
+      <AuthStatusCard
+        title="Verification required"
+        message={message}
+      />
     );
   }
 
   if (!user) {
-    return (
-      <div className="profile-loading">
-        <LoadingDots label="Loading" size="lg" />
-      </div>
-    );
+    return null;
   }
 
   const initial = (user.full_name?.charAt(0) || user.email?.charAt(0) || 'U').toUpperCase();
