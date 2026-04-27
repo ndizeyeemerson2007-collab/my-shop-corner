@@ -7,8 +7,14 @@ import { Product, CartItem, User, Review } from "../../types";
 import { supabase } from "../../lib/supabase";
 import { useConfirm } from "../../components/ConfirmProvider";
 import LoadingDots from "../../components/LoadingDots";
+import { useCheckoutLocation } from "../../hooks/useCheckoutLocation";
+import { BUSINESS_HQ, calculateDeliveryQuote } from "../../lib/delivery";
 
 const PENDING_PRODUCT_KEY = 'shopcorner_pending_product';
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : 'Something went wrong.';
+}
 
 export default function TrendPage() {
   const confirm = useConfirm();
@@ -43,6 +49,10 @@ export default function TrendPage() {
   // Review Form State
   const [newReviewText, setNewReviewText] = useState('');
   const [newReviewRating, setNewReviewRating] = useState(5);
+  const { currentLocation, hasLocation, locationError, requestCurrentLocation, requestingLocation } = useCheckoutLocation();
+  const deliveryQuote = currentLocation ? calculateDeliveryQuote(currentLocation.latitude, currentLocation.longitude) : null;
+  const numericCartTotal = Number(cartTotal || 0);
+  const orderGrandTotal = numericCartTotal + Number(deliveryQuote?.deliveryFee || 0);
 
   // Main Init
   useEffect(() => {
@@ -137,7 +147,7 @@ export default function TrendPage() {
       if (cartRes.status === 'fulfilled' && cartRes.value.success) {
         setCartCount(cartRes.value.cart_count || 0);
         setCartItems(cartRes.value.cart_items || []);
-        setCartTotal(cartRes.value.cart_total || 0);
+        setCartTotal(Number(cartRes.value.cart_total || 0));
       }
     } catch (e) {
       console.warn('Error loading initial data', e);
@@ -152,7 +162,7 @@ export default function TrendPage() {
       if (cartRes.success) {
         setCartCount(cartRes.cart_count || 0);
         setCartItems(cartRes.cart_items || []);
-        setCartTotal(cartRes.cart_total || 0);
+        setCartTotal(Number(cartRes.cart_total || 0));
         window.dispatchEvent(new CustomEvent('cartUpdated'));
       }
     } catch (e) {
@@ -268,27 +278,62 @@ export default function TrendPage() {
   const placeOrder = async () => {
     if (cartItems.length === 0) return;
 
+    if (!user) {
+      const shouldLogin = await confirm({
+        title: 'Login Required',
+        message: 'You need to log in before placing an order. Go to login now?',
+        confirmText: 'Login',
+        cancelText: 'Not now',
+        iconClass: 'fa-solid fa-user-lock',
+      });
+
+      if (shouldLogin) {
+        localStorage.setItem('shopcorner_open_cart_after_login', '1');
+        router.push('/login');
+      }
+      return;
+    }
+
+    const deliveryLocation = currentLocation || await requestCurrentLocation();
+    if (!deliveryLocation) {
+      window.alert('Please allow location access so we can save your live delivery location with this order.');
+      return;
+    }
+
+    const confirmedQuote = calculateDeliveryQuote(deliveryLocation.latitude, deliveryLocation.longitude);
+    const confirmed = await confirm({
+      title: 'Place Order',
+      message: `Are you sure you want to place this order?\n\nDelivery location:\n${deliveryLocation.label}\n\nDistance from ${BUSINESS_HQ.district}: ${confirmedQuote.distanceKm.toFixed(2)} km\nDelivery fee: RWF ${confirmedQuote.deliveryFee.toLocaleString()}`,
+      confirmText: 'Place',
+      cancelText: 'Cancel',
+      iconClass: 'fa-solid fa-receipt',
+    });
+    if (!confirmed) return;
+
     setPlacingOrder(true);
     try {
       const res = await safeFetch<{ success: boolean; order_id?: string; message?: string }>('/api/orders', {
         method: 'POST',
         body: JSON.stringify({
-          items: cartItems,
+          delivery_location: deliveryLocation,
         }),
       });
 
       if (res.success) {
-        window.alert('Order placed successfully!');
-        setCartItems([]);
-        setCartCount(0);
-        setCartTotal(0);
+        await loadCartData();
         setIsCartOpen(false);
-        window.dispatchEvent(new CustomEvent('cartUpdated'));
+        await confirm({
+          title: 'Order Placed',
+          message: 'Your order was placed successfully. You can track or manage it from your profile.',
+          confirmText: 'OK',
+          iconClass: 'fa-solid fa-circle-check',
+          hideCancel: true,
+        });
       } else {
         window.alert(res.message || 'Failed to place order');
       }
-    } catch (err: any) {
-      window.alert(err?.message || 'Failed to place order');
+    } catch (err: unknown) {
+      window.alert(getErrorMessage(err) || 'Failed to place order');
     } finally {
       setPlacingOrder(false);
     }
@@ -489,8 +534,43 @@ export default function TrendPage() {
             </div>
             {cartItems.length > 0 && (
               <div className="cart-modal-footer">
-                <div className="cart-total-display">
-                  Total: <span id="cart-total-amount">RWF {cartTotal}</span>
+                <div className="checkout-location-card">
+                  <div className="checkout-location-row">
+                    <div>
+                      <p className="checkout-location-label">Delivery location</p>
+                      <p className="checkout-location-meta">
+                        {hasLocation
+                          ? currentLocation?.label
+                          : 'Required for shipping. Share your live location so the order uses your real delivery point.'}
+                      </p>
+                      {!hasLocation && locationError ? (
+                        <p className="checkout-location-error">{locationError}</p>
+                      ) : null}
+                      {deliveryQuote ? (
+                        <p className="checkout-location-fee">
+                          {deliveryQuote.distanceKm.toFixed(2)} km from {BUSINESS_HQ.district} | Delivery fee RWF {deliveryQuote.deliveryFee.toLocaleString()}
+                        </p>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      className="checkout-location-action"
+                      onClick={() => void requestCurrentLocation()}
+                      disabled={requestingLocation || placingOrder}
+                    >
+                      {requestingLocation ? 'Checking...' : hasLocation ? 'Refresh' : 'Use My Live Location'}
+                    </button>
+                  </div>
+                </div>
+                {deliveryQuote ? (
+                  <div className="cart-total-display checkout-total-breakdown">
+                    <span>Delivery Fee</span>
+                    <span>RWF {Number(deliveryQuote.deliveryFee).toLocaleString()}</span>
+                  </div>
+                ) : null}
+                <div className="cart-total-display checkout-total-breakdown checkout-total-final">
+                  <span>Total</span>
+                  <span id="cart-total-amount">RWF {Number(orderGrandTotal).toLocaleString()}</span>
                 </div>
                 <button
                   id="place-order-btn"

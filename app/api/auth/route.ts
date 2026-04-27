@@ -61,6 +61,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ success: true, isLoggedIn: false });
     }
 
+    if (String(profile.account_status || 'active').toLowerCase() === 'deactivated') {
+      return NextResponse.json({ success: true, isLoggedIn: false });
+    }
+
     return NextResponse.json({ 
       success: true, 
       isLoggedIn: true, 
@@ -85,6 +89,8 @@ export async function POST(req: NextRequest) {
   const fullName = (body.full_name || '').trim();
   const phone = (body.phone || '').trim();
   const address = (body.address || '').trim();
+  const businessName = (body.business_name || '').trim();
+  const accountType = String(body.account_type || 'user').toLowerCase() === 'seller' ? 'seller' : 'user';
 
   // Validate inputs
   if (!email || !password) {
@@ -106,7 +112,7 @@ export async function POST(req: NextRequest) {
   const ensureUserProfile = async (
     authUserId: string,
     fallbackEmail: string,
-    profileInput: { full_name?: string; phone?: string; address?: string; role?: string }
+    profileInput: { full_name?: string; phone?: string; address?: string; role?: string; business_name?: string }
   ) => {
     const { data: existingProfile, error: existingProfileError } = await supabaseAdmin
       .from('users')
@@ -132,6 +138,9 @@ export async function POST(req: NextRequest) {
         phone: profileInput.phone || '',
         address: profileInput.address || '',
         role: profileInput.role || 'user',
+        account_status: 'active',
+        seller_approval_status: profileInput.role === 'seller' ? 'pending' : 'approved',
+        business_name: profileInput.business_name || '',
       }])
       .select('*')
       .single();
@@ -147,9 +156,9 @@ export async function POST(req: NextRequest) {
   try {
     if (mode === 'signup') {
       // Validate signup fields
-      if (!fullName || !phone || !address) {
+      if (!fullName || !phone || !address || (accountType === 'seller' && !businessName)) {
         return NextResponse.json(
-          { success: false, message: 'Please fill all fields' },
+          { success: false, message: accountType === 'seller' ? 'Please fill all seller fields' : 'Please fill all fields' },
           { status: 400 }
         );
       }
@@ -168,6 +177,13 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      if (businessName.length > 120) {
+        return NextResponse.json(
+          { success: false, message: 'Business name must be 120 characters or less' },
+          { status: 400 }
+        );
+      }
+
       const emailRedirectTo = getEmailRedirectUrl(req);
 
       // Sign up with Supabase Auth and trigger email confirmation.
@@ -180,6 +196,8 @@ export async function POST(req: NextRequest) {
             full_name: fullName,
             phone,
             address,
+            business_name: businessName,
+            account_type: accountType,
           },
         },
       });
@@ -218,7 +236,7 @@ export async function POST(req: NextRequest) {
       const { profile: newUser, error: profileError } = await ensureUserProfile(
         authData.user.id,
         email,
-        { full_name: fullName, phone, address, role: 'user' }
+        { full_name: fullName, phone, address, role: accountType, business_name: businessName }
       );
 
       if (profileError) {
@@ -272,7 +290,41 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const redirect = userProfile?.role === 'admin' ? '/admin' : '/dashboard';
+    const accountStatus = String(userProfile.account_status || 'active').toLowerCase();
+    const sellerApprovalStatus = String(userProfile.seller_approval_status || (userProfile.role === 'seller' ? 'pending' : 'approved')).toLowerCase();
+
+    if (accountStatus === 'suspended') {
+      return NextResponse.json(
+        { success: false, message: 'This account is suspended. Please contact the admin team.' },
+        { status: 403 }
+      );
+    }
+
+    if (accountStatus === 'deactivated') {
+      return NextResponse.json(
+        { success: false, message: 'This account has been deactivated. Please contact the admin team.' },
+        { status: 403 }
+      );
+    }
+
+    if (userProfile.role === 'seller' && sellerApprovalStatus !== 'approved') {
+      return NextResponse.json(
+        {
+          success: false,
+          message: sellerApprovalStatus === 'rejected'
+            ? 'Your seller request was rejected. Please contact the admin team.'
+            : 'Your seller account is waiting for admin approval before you can access the seller dashboard.',
+        },
+        { status: 403 }
+      );
+    }
+
+    const redirect =
+      userProfile?.role === 'admin'
+        ? '/admin'
+        : userProfile?.role === 'seller'
+        ? '/seller'
+        : '/dashboard';
 
     return NextResponse.json({
       success: true,

@@ -59,7 +59,7 @@ export async function GET(request: NextRequest) {
       success: true,
       cart_items: cartItems,
       cart_count: cartCount,
-      cart_total: cartTotal.toFixed(2)
+      cart_total: Number(cartTotal.toFixed(2))
     });
 
   } catch (error: any) {

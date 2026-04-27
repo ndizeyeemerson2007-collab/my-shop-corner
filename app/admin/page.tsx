@@ -1,421 +1,235 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
-import { handleLogoutLocal, safeFetch, resolveProductImagePath } from '../../services/api';
-import { Product, User } from '../../types';
-import { useConfirm } from '../../components/ConfirmProvider';
-import LoadingDots from '../../components/LoadingDots';
+import { useEffect, useMemo, useState } from 'react';
 import AuthStatusCard from '../../components/AuthStatusCard';
+import { useConfirm } from '../../components/ConfirmProvider';
 import { useProtectedAuth } from '../../hooks/useProtectedAuth';
+import { resolveProductImagePath, safeFetch } from '../../services/api';
 
-type AdminSection = 'stats' | 'products' | 'upload' | 'orders';
 type AdminStats = {
-  revenue: number;
-  orders: number;
-  products: number;
-  trend_products: number;
+  total_users: number;
+  active_users: number;
+  suspended_users: number;
+  total_sellers: number;
+  pending_sellers: number;
+  approved_sellers: number;
+  total_buyers: number;
+  total_products: number;
+  total_orders: number;
+  total_revenue: number;
+  delivery_fees: number;
+  product_sales: number;
 };
 
-type AdminOrderItem = {
-  id: number;
-  product_name: string;
-  quantity: number;
-  color?: string | null;
-  size?: string | null;
-};
-
-type AdminOrder = {
-  id: number;
-  status: string;
-  total_amount: number;
+type AdminUser = {
+  id: string;
+  email: string;
   full_name?: string | null;
   phone?: string | null;
-  location?: string | null;
-  customer_email?: string | null;
-  customer?: {
-    id?: string | null;
-    email?: string | null;
-    full_name?: string | null;
-    phone?: string | null;
-    address?: string | null;
-  } | null;
-  created_at: string;
-  items?: AdminOrderItem[];
+  address?: string | null;
+  role?: string | null;
+  business_name?: string | null;
+  created_at?: string;
+  account_status?: string | null;
+  seller_approval_status?: string | null;
 };
 
-type OrderFilter = 'all' | 'pending' | 'paid' | 'processing' | 'canceled' | 'delivered';
-
-const defaultProductForm = {
-  name: '',
-  description: '',
-  price: '',
-  stock: '100',
-  category: '',
-  colors: '',
-  sizes: '',
-  badge: '',
-  sold: '0',
-  is_trend: false,
-  image: '',
+type AdminProduct = {
+  id: number;
+  name: string;
+  price: number;
+  stock?: number | null;
+  image?: string | null;
+  badge?: string | null;
+  category?: string | null;
+  seller_name?: string | null;
+  seller_business_name?: string | null;
 };
+
+type RevenuePoint = {
+  key: string;
+  label: string;
+  revenue: number;
+};
+
+type DashboardPayload = {
+  success: boolean;
+  stats: AdminStats;
+  order_status_counts: Record<string, number>;
+  revenue_chart: RevenuePoint[];
+  pending_sellers: AdminUser[];
+  recently_approved_sellers: AdminUser[];
+  users: AdminUser[];
+  suspended_users_list: AdminUser[];
+  products: AdminProduct[];
+};
+
+const emptyStats: AdminStats = {
+  total_users: 0,
+  active_users: 0,
+  suspended_users: 0,
+  total_sellers: 0,
+  pending_sellers: 0,
+  approved_sellers: 0,
+  total_buyers: 0,
+  total_products: 0,
+  total_orders: 0,
+  total_revenue: 0,
+  delivery_fees: 0,
+  product_sales: 0,
+};
+
+function getUserLabel(user: AdminUser) {
+  return user.full_name || user.business_name || user.email || 'Unknown user';
+}
+
+function getRoleLabel(user: AdminUser) {
+  if (user.role === 'seller') return 'Seller';
+  if (user.role === 'admin') return 'Admin';
+  return 'Buyer';
+}
 
 export default function AdminPage() {
   const confirm = useConfirm();
-  const { loading, user: protectedUser, accessBlocked, message } = useProtectedAuth({ requiredRole: 'admin' });
-  const [user, setUser] = useState<User | null>(null);
-  const [activeSection, setActiveSection] = useState<AdminSection | 'settings'>('stats');
-  const [stats, setStats] = useState<AdminStats>({ revenue: 0, orders: 0, products: 0, trend_products: 0 });
-  const [products, setProducts] = useState<Product[]>([]);
-  const [orders, setOrders] = useState<AdminOrder[]>([]);
-  const [orderFilter, setOrderFilter] = useState<OrderFilter>('all');
-  const [orderSearch, setOrderSearch] = useState('');
-  const [orderDateFrom, setOrderDateFrom] = useState('');
-  const [orderDateTo, setOrderDateTo] = useState('');
-  const [showOrderFilterModal, setShowOrderFilterModal] = useState(false);
-  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
-  const [orderListModal, setOrderListModal] = useState<AdminOrder | null>(null);
-  const [customerInfoModal, setCustomerInfoModal] = useState<AdminOrder | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [imageFiles, setImageFiles] = useState<File[]>([]);
-  const [savingProfile, setSavingProfile] = useState(false);
-  const [showProfilePanel, setShowProfilePanel] = useState(false);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  const [profileForm, setProfileForm] = useState({ full_name: '', phone: '', address: '' });
-  const [profileOriginal, setProfileOriginal] = useState({ full_name: '', phone: '', address: '' });
-  const [form, setForm] = useState(defaultProductForm);
-  const imageInputRef = useRef<HTMLInputElement | null>(null);
-  const router = useRouter();
+  const { loading, user, accessBlocked, message } = useProtectedAuth({ requiredRole: 'admin' });
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [actionLoadingId, setActionLoadingId] = useState('');
+  const [stats, setStats] = useState<AdminStats>(emptyStats);
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
+  const [revenueChart, setRevenueChart] = useState<RevenuePoint[]>([]);
+  const [pendingSellers, setPendingSellers] = useState<AdminUser[]>([]);
+  const [recentlyApprovedSellers, setRecentlyApprovedSellers] = useState<AdminUser[]>([]);
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [suspendedUsers, setSuspendedUsers] = useState<AdminUser[]>([]);
+  const [products, setProducts] = useState<AdminProduct[]>([]);
+  const [productSearch, setProductSearch] = useState('');
+  const [userSearch, setUserSearch] = useState('');
+
+  const loadDashboard = async () => {
+    setDashboardLoading(true);
+    try {
+      const result = await safeFetch<DashboardPayload>('/api/admin/dashboard');
+      if (!result.success) {
+        throw new Error('Could not load admin dashboard');
+      }
+
+      setStats(result.stats || emptyStats);
+      setStatusCounts(result.order_status_counts || {});
+      setRevenueChart(result.revenue_chart || []);
+      setPendingSellers(result.pending_sellers || []);
+      setRecentlyApprovedSellers(result.recently_approved_sellers || []);
+      setUsers(result.users || []);
+      setSuspendedUsers(result.suspended_users_list || []);
+      setProducts(result.products || []);
+    } catch (error) {
+      console.error('Admin dashboard error', error);
+    } finally {
+      setDashboardLoading(false);
+    }
+  };
 
   useEffect(() => {
-    if (!protectedUser || accessBlocked) {
-      setUser(null);
-      return;
-    }
+    if (loading || accessBlocked || !user) return;
+    void loadDashboard();
+  }, [accessBlocked, loading, user]);
 
-    const mappedProfile = {
-      full_name: protectedUser.full_name || '',
-      phone: protectedUser.phone || '',
-      address: protectedUser.address || '',
-    };
+  const handleUserAction = async (
+    targetUser: AdminUser,
+    action: 'approve_seller' | 'reject_seller' | 'suspend' | 'reactivate' | 'deactivate',
+  ) => {
+    const actionLabelMap = {
+      approve_seller: 'approve this seller request',
+      reject_seller: 'reject this seller request',
+      suspend: 'suspend this user',
+      reactivate: 'reactivate this user',
+      deactivate: 'deactivate this user',
+    } as const;
 
-    setUser(protectedUser);
-    setProfileForm(mappedProfile);
-    setProfileOriginal(mappedProfile);
-    void Promise.all([loadDashboardStats(), loadProducts(), loadOrders()]);
-  }, [accessBlocked, protectedUser]);
-
-  const loadDashboardStats = async () => {
-    try {
-      const result = await safeFetch<{ success: boolean; stats?: AdminStats; orders?: any[] }>('/api/admin/dashboard');
-      if (result.success && result.stats) {
-        setStats(result.stats);
-      }
-    } catch {
-      // keep defaults
-    }
-  };
-
-  const loadProducts = async () => {
-    try {
-      const result = await safeFetch<{ success: boolean; products?: Product[] }>('/api/products?limit=50');
-      if (result.success && result.products) {
-        setProducts(result.products);
-      }
-    } catch {
-      // keep previous
-    }
-  };
-
-  const loadOrders = async () => {
-    try {
-      const result = await safeFetch<{ success: boolean; orders?: AdminOrder[] }>('/api/admin/orders');
-      if (result.success) {
-        setOrders(result.orders || []);
-      }
-    } catch {
-      setOrders([]);
-    }
-  };
-
-  const resetProductForm = () => {
-    setForm(defaultProductForm);
-    setEditingProduct(null);
-    setImageFiles([]);
-    if (imageInputRef.current) {
-      imageInputRef.current.value = '';
-    }
-  };
-
-  const getProductImages = (product: Product | null) => {
-    if (!product) return [];
-    const gallery = Array.isArray(product.images)
-      ? product.images
-      : typeof product.images === 'string' && product.images
-        ? [product.images]
-        : [];
-    const allImages = [product.image, ...gallery].filter((value): value is string => Boolean(value));
-    return Array.from(new Set(allImages));
-  };
-
-  const normalizeOrderStatus = (status: string) => {
-    const normalized = String(status || 'pending').toLowerCase();
-    return normalized === 'cancelled' ? 'canceled' : normalized;
-  };
-
-  const orderSortPriority = (status: string) => {
-    switch (normalizeOrderStatus(status)) {
-      case 'pending':
-        return 0;
-      case 'paid':
-        return 1;
-      case 'processing':
-        return 2;
-      case 'canceled':
-        return 3;
-      case 'delivered':
-        return 4;
-      default:
-        return 5;
-    }
-  };
-
-  const handleLogout = async () => {
     const confirmed = await confirm({
-      title: 'Logout',
-      message: 'Are you sure you want to logout?',
+      title: 'Confirm Admin Action',
+      message: `Do you want to ${actionLabelMap[action]}?`,
       confirmText: 'Yes',
       cancelText: 'No',
-      iconClass: 'fa-solid fa-right-from-bracket',
+      iconClass: 'fa-solid fa-shield-halved',
     });
     if (!confirmed) return;
 
-    handleLogoutLocal();
-    window.dispatchEvent(new CustomEvent('userLogout'));
+    setActionLoadingId(targetUser.id);
     try {
-      await safeFetch('/api/auth', {
-        method: 'POST',
-        body: JSON.stringify({ mode: 'logout' }),
+      const result = await safeFetch<{ success: boolean; message?: string }>('/api/admin/users', {
+        method: 'PATCH',
+        body: JSON.stringify({ user_id: targetUser.id, action }),
       });
-    } catch {
-      // ignore
-    }
-    router.replace('/login');
-    router.refresh();
-  };
 
-  const switchSection = async (section: AdminSection) => {
-    setActiveSection(section);
-    setShowProfilePanel(false);
-    if (section === 'products') await loadProducts();
-    if (section === 'orders') {
-      setOrderFilter('all');
-      setOrderSearch('');
-      setOrderDateFrom('');
-      setOrderDateTo('');
-      await loadOrders();
-    }
-    if (section === 'stats') await loadDashboardStats();
-  };
-
-  const switchToSettings = () => {
-    setShowProfilePanel(false);
-    setActiveSection('settings');
-  };
-
-  const handleAddProduct = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setUploading(true);
-    try {
-      const isEditing = Boolean(editingProduct);
-      if (!isEditing && imageFiles.length === 0) {
-        window.alert('Please choose at least one product image.');
+      if (!result.success) {
+        window.alert(result.message || 'Action failed.');
         return;
       }
 
-      let uploadedPaths: string[] = [];
-      if (imageFiles.length > 0) {
-        const uploadData = new FormData();
-        imageFiles.forEach((file) => uploadData.append('files', file));
-
-        const uploadResult = await safeFetch<{ success: boolean; message?: string; paths?: string[] }>('/api/upload', {
-          method: 'POST',
-          body: uploadData,
-        });
-
-        uploadedPaths = Array.isArray(uploadResult.paths) ? uploadResult.paths : [];
-        if (!uploadResult.success || uploadedPaths.length === 0) {
-          window.alert(uploadResult.message || 'Image upload failed.');
-          return;
-        }
-      }
-
-      const existingImages = getProductImages(editingProduct);
-      const finalImages = uploadedPaths.length > 0 ? uploadedPaths : existingImages;
-
-      const payload = {
-        ...(editingProduct ? { id: editingProduct.id } : {}),
-        name: form.name,
-        description: form.description,
-        price: Number(form.price),
-        stock: Number(form.stock),
-        category: form.category,
-        colors: form.colors,
-        sizes: form.sizes,
-        badge: form.badge,
-        sold: Number(form.sold),
-        is_trend: form.is_trend,
-        image: finalImages[0] || '',
-        images: finalImages,
-      };
-      const result = await safeFetch<{ success: boolean; message?: string }>('/api/products', {
-        method: editingProduct ? 'PATCH' : 'POST',
-        body: JSON.stringify(payload),
-      });
-      if (result.success) {
-        window.alert(editingProduct ? 'Product updated successfully.' : 'Product saved successfully.');
-        resetProductForm();
-        await Promise.all([loadProducts(), loadDashboardStats()]);
-        setActiveSection('products');
-      } else {
-        window.alert(result.message || `Failed to ${editingProduct ? 'update' : 'save'} product.`);
-      }
-    } catch (err: any) {
-      window.alert(err?.message || 'Network error.');
+      await loadDashboard();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'Action failed.');
     } finally {
-      setUploading(false);
+      setActionLoadingId('');
     }
   };
 
-  const handleImageSelection = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    setImageFiles(files);
-  };
-
-  const handleEditProduct = (product: Product) => {
-    setEditingProduct(product);
-    setForm({
-      name: product.name || '',
-      description: product.description || '',
-      price: String(product.price ?? ''),
-      stock: String(product.stock ?? 0),
-      category: product.category || '',
-      colors: product.colors || '',
-      sizes: product.sizes || '',
-      badge: product.badge || '',
-      sold: String(product.sold ?? 0),
-      is_trend: Boolean(product.is_trend),
-      image: product.image || '',
+  const handleDeleteProduct = async (product: AdminProduct) => {
+    const confirmed = await confirm({
+      title: 'Remove Product',
+      message: `Do you want to remove ${product.name} from the platform?`,
+      confirmText: 'Remove',
+      cancelText: 'Keep',
+      iconClass: 'fa-solid fa-trash-can',
     });
-    setImageFiles([]);
-    if (imageInputRef.current) {
-      imageInputRef.current.value = '';
-    }
-    setActiveSection('upload');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+    if (!confirmed) return;
 
-  const handleDeleteProduct = async (id: number) => {
-    if (!window.confirm('Delete this product?')) return;
+    setActionLoadingId(`product-${product.id}`);
     try {
-      const result = await safeFetch<{ success: boolean; message?: string }>(`/api/products?id=${id}`, {
+      const result = await safeFetch<{ success: boolean; message?: string }>(`/api/admin/products?id=${product.id}`, {
         method: 'DELETE',
       });
+
       if (!result.success) {
-        window.alert(result.message || 'Delete failed.');
+        window.alert(result.message || 'Could not remove product.');
         return;
       }
-      await Promise.all([loadProducts(), loadDashboardStats()]);
-    } catch (err: any) {
-      window.alert(err?.message || 'Delete failed.');
-    }
-  };
 
-  const updateOrderStatus = async (orderId: number, status: string) => {
-    try {
-      const result = await safeFetch<{ success: boolean; message?: string }>('/api/admin/orders', {
-        method: 'PATCH',
-        body: JSON.stringify({ order_id: orderId, status }),
-      });
-      if (!result.success) {
-        window.alert(result.message || 'Failed to update order status.');
-        return;
-      }
-      await Promise.all([loadOrders(), loadDashboardStats()]);
-    } catch (err: any) {
-      window.alert(err?.message || 'Failed to update order status.');
-    }
-  };
-
-  const estimateDeliveryDistanceKm = (location?: string | null) => {
-    const value = String(location || '').toLowerCase();
-    if (!value) return 0;
-    if (value.includes('nyarugenge')) return 6;
-    if (value.includes('kicukiro')) return 10;
-    if (value.includes('gasabo')) return 12;
-    if (value.includes('remera')) return 8;
-    if (value.includes('kimironko')) return 10;
-    if (value.includes('nyamirambo')) return 7;
-    if (value.includes('gisozi')) return 9;
-    if (value.includes('kacyiru')) return 6;
-    if (value.includes('kigali')) return 6;
-    return 14;
-  };
-
-  const getDeliveryFee = (location?: string | null) => {
-    const distanceKm = estimateDeliveryDistanceKm(location);
-    return Math.ceil(distanceKm / 2) * 200;
-  };
-
-  const getOrderGrandTotal = (order: AdminOrder) => Number(order.total_amount || 0) + getDeliveryFee(order.location);
-
-  const hasProfileChanges =
-    profileForm.full_name !== profileOriginal.full_name ||
-    profileForm.phone !== profileOriginal.phone ||
-    profileForm.address !== profileOriginal.address;
-
-  const handleDiscardProfile = () => {
-    if (!hasProfileChanges) return;
-    if (!window.confirm('Discard unsaved changes?')) return;
-    setProfileForm(profileOriginal);
-  };
-
-  const handleSaveProfile = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSavingProfile(true);
-    try {
-      const result = await safeFetch<{ success: boolean; user?: User; message?: string }>('/api/profile', {
-        method: 'PATCH',
-        body: JSON.stringify(profileForm),
-      });
-      if (result.success && result.user) {
-        setUser(result.user);
-        const next = {
-          full_name: result.user.full_name || '',
-          phone: result.user.phone || '',
-          address: result.user.address || '',
-        };
-        setProfileForm(next);
-        setProfileOriginal(next);
-        localStorage.setItem('shopcorner_user', JSON.stringify(result.user));
-        window.dispatchEvent(new CustomEvent('userLogin'));
-        window.alert('Profile updated successfully.');
-        setShowProfilePanel(false);
-      } else {
-        window.alert(result.message || 'Failed to update profile.');
-      }
-    } catch (err: any) {
-      window.alert(err?.message || 'Could not save changes.');
+      await loadDashboard();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'Could not remove product.');
     } finally {
-      setSavingProfile(false);
+      setActionLoadingId('');
     }
   };
 
-  if (loading) {
+  const filteredProducts = useMemo(() => {
+    const searchValue = productSearch.trim().toLowerCase();
+    if (!searchValue) return products;
+    return products.filter((product) =>
+      [product.name, product.category, product.seller_name, product.seller_business_name]
+        .map((value) => String(value || '').toLowerCase())
+        .some((value) => value.includes(searchValue)),
+    );
+  }, [productSearch, products]);
+
+  const filteredUsers = useMemo(() => {
+    const searchValue = userSearch.trim().toLowerCase();
+    if (!searchValue) return users;
+    return users.filter((entry) =>
+      [entry.full_name, entry.email, entry.business_name, entry.phone]
+        .map((value) => String(value || '').toLowerCase())
+        .some((value) => value.includes(searchValue)),
+    );
+  }, [userSearch, users]);
+
+  const maxRevenue = Math.max(1, ...revenueChart.map((item) => item.revenue || 0));
+
+  if (loading || dashboardLoading) {
     return (
       <AuthStatusCard
-        title="Loading admin area"
-        message="Checking your account before we open the dashboard."
+        title="Loading admin control center"
+        message="Checking your admin session and preparing the dashboard."
         loading
       />
     );
@@ -424,619 +238,314 @@ export default function AdminPage() {
   if (accessBlocked) {
     return (
       <AuthStatusCard
-        title="Access blocked"
+        title="Admin access blocked"
         message={message}
       />
     );
   }
 
-  if (!user) {
-    return null;
-  }
-
-  const sortedOrders = [...orders].sort((a, b) => {
-    const priorityDiff = orderSortPriority(a.status) - orderSortPriority(b.status);
-    if (priorityDiff !== 0) return priorityDiff;
-    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-  });
-
-  const visibleOrders =
-    sortedOrders.filter((order) => {
-      const matchesStatus =
-        orderFilter === 'all' ? true : normalizeOrderStatus(order.status) === orderFilter;
-
-      const searchValue = orderSearch.trim().toLowerCase();
-      const searchableText = [
-        `order ${order.id}`,
-        order.full_name,
-        order.phone,
-        order.location,
-        order.customer_email,
-        order.customer?.full_name,
-        order.customer?.phone,
-        order.customer?.email,
-        order.customer?.address,
-        ...(order.items || []).map((item) => item.product_name),
-      ]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-
-      const matchesSearch = searchValue ? searchableText.includes(searchValue) : true;
-
-      const orderDate = new Date(order.created_at);
-      const matchesDateFrom = orderDateFrom
-        ? orderDate >= new Date(`${orderDateFrom}T00:00:00`)
-        : true;
-      const matchesDateTo = orderDateTo
-        ? orderDate <= new Date(`${orderDateTo}T23:59:59`)
-        : true;
-
-      return matchesStatus && matchesSearch && matchesDateFrom && matchesDateTo;
-    });
-
-  const orderFilters: Array<{ value: OrderFilter; label: string }> = [
-    { value: 'all', label: 'All' },
-    { value: 'pending', label: 'Pending' },
-    { value: 'paid', label: 'Paid' },
-    { value: 'processing', label: 'Processing' },
-    { value: 'canceled', label: 'Canceled' },
-    { value: 'delivered', label: 'Delivered' },
-  ];
-
-  const orderCounts = orderFilters.reduce<Record<OrderFilter, number>>((acc, filter) => {
-    acc[filter.value] =
-      filter.value === 'all'
-        ? orders.length
-        : orders.filter((order) => normalizeOrderStatus(order.status) === filter.value).length;
-    return acc;
-  }, {
-    all: 0,
-    pending: 0,
-    paid: 0,
-    processing: 0,
-    canceled: 0,
-    delivered: 0,
-  });
-
   return (
-    <main className="admin-page-shell">
-      <section className={`admin-sec ${activeSection === 'stats' ? '' : 'admin-hidden'}`}>
-        <div className="stats-grid">
-          <div className="stat-box">
-            <h2>RWF {Number(stats.revenue || 0).toLocaleString()}</h2>
-            <p>Total Revenue</p>
-          </div>
-          <div className="stat-box">
-            <h2>{stats.orders || 0}</h2>
-            <p>Active Orders</p>
-          </div>
-          <div className="stat-box">
-            <h2>{stats.products || 0}</h2>
-            <p>Total Products</p>
-          </div>
-          <div className="stat-box">
-            <h2>{stats.trend_products || 0}</h2>
-            <p>Trend Products</p>
-          </div>
-        </div>
-      </section>
-
-      <section className={`admin-sec ${activeSection === 'products' ? '' : 'admin-hidden'}`}>
-        <h3 className="admin-sec-title">Manage Inventory</h3>
-        <div id="admin-product-list">
-          {products.length === 0 ? (
-            <div className="admin-card">No products found.</div>
-          ) : (
-            products.map((p) => (
-              <div key={p.id} className="admin-card admin-product-card">
-                {resolveProductImagePath(p.image) ? (
-                  <img src={resolveProductImagePath(p.image)} alt={p.name} />
-                ) : (
-                  <div className="admin-product-image-placeholder" />
-                )}
-                <div className="admin-product-main">
-                  <p>
-                    {p.name} {p.is_trend ? <i className="fa-solid fa-fire admin-trend-icon" /> : null}
-                  </p>
-                  <small>Stock: {p.stock || 0} | RWF {Number(p.price || 0).toLocaleString()}</small>
-                </div>
-                <div className="admin-card-actions">
-                  <button
-                    type="button"
-                    title="Edit"
-                    className="admin-card-action-edit"
-                    onClick={() => handleEditProduct(p)}
-                  >
-                    <i className="fa-solid fa-pen-to-square"></i>
-                  </button>
-                  <button title="Delete" onClick={() => handleDeleteProduct(Number(p.id))}>
-                    <i className="fa-solid fa-trash"></i>
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </section>
-
-      <section className={`admin-sec ${activeSection === 'upload' ? '' : 'admin-hidden'}`}>
-        <form className="admin-card" onSubmit={handleAddProduct}>
-          <h3 className="admin-sec-title">{editingProduct ? `Edit Product #${editingProduct.id}` : 'Add New Product'}</h3>
-
-          <label className="adm-label">Product Name</label>
-          <input className="adm-input" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-
-          <label className="adm-label">Description</label>
-          <textarea className="adm-input" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
-
-          <div className="admin-two-col">
-            <div>
-              <label className="adm-label">Price (RWF)</label>
-              <input type="number" className="adm-input" required value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
-            </div>
-            <div>
-              <label className="adm-label">Stock Qty</label>
-              <input type="number" className="adm-input" required value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} />
-            </div>
-          </div>
-
-          <label className="adm-label">Category</label>
-          <input className="adm-input" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
-
-          <label className="adm-label">Product Images</label>
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            required={!editingProduct}
-            className="adm-input"
-            onChange={handleImageSelection}
-          />
-          <p className="admin-upload-help">
-            {editingProduct
-              ? 'Choose new image files only if you want to replace the current product images.'
-              : 'Choose one or many images from the device. The first image becomes the main image.'}
+    <main className="admin-central-page">
+      <section className="admin-central-hero">
+        <div>
+          <p className="admin-central-kicker">MyShop command room</p>
+          <h1>Admin dashboard for approvals, platform control, and user safety.</h1>
+          <p>
+            Review seller requests, monitor trade value, control product visibility, and suspend or reactivate accounts from one place.
           </p>
-          {editingProduct && getProductImages(editingProduct).length > 0 ? (
-            <div className="admin-upload-list">
-              {getProductImages(editingProduct).map((imagePath, index) => (
-                <div key={`${imagePath}-${index}`} className="admin-upload-item">
-                  <span>Current image {index + 1}</span>
-                  {index === 0 ? <strong>Main image</strong> : <small>Gallery image</small>}
-                </div>
-              ))}
-            </div>
-          ) : null}
-          {imageFiles.length > 0 ? (
-            <div className="admin-upload-list">
-              {imageFiles.map((file, index) => (
-                <div key={`${file.name}-${index}`} className="admin-upload-item">
-                  <span>{file.name}</span>
-                  {index === 0 ? <strong>Main image</strong> : <small>Extra image</small>}
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          <div className="admin-two-col">
-            <div>
-              <label className="adm-label">Colors</label>
-              <input className="adm-input" value={form.colors} onChange={(e) => setForm({ ...form, colors: e.target.value })} />
-            </div>
-            <div>
-              <label className="adm-label">Sizes</label>
-              <input className="adm-input" value={form.sizes} onChange={(e) => setForm({ ...form, sizes: e.target.value })} />
-            </div>
+        </div>
+        <div className="admin-central-hero-stats">
+          <div className="admin-central-stat-pill">
+            <strong>{stats.pending_sellers}</strong>
+            <span>Pending sellers</span>
           </div>
-
-          <div className="admin-two-col">
-            <div>
-              <label className="adm-label">Badge Label</label>
-              <input className="adm-input" value={form.badge} onChange={(e) => setForm({ ...form, badge: e.target.value })} />
-            </div>
-            <div>
-              <label className="adm-label">Sold Count</label>
-              <input type="number" className="adm-input" value={form.sold} onChange={(e) => setForm({ ...form, sold: e.target.value })} />
-            </div>
+          <div className="admin-central-stat-pill">
+            <strong>{stats.total_revenue.toLocaleString()}</strong>
+            <span>Platform GMV</span>
           </div>
-
-          <label className="admin-checkbox-row">
-            <input type="checkbox" checked={form.is_trend} onChange={(e) => setForm({ ...form, is_trend: e.target.checked })} />
-            Trend Product?
-          </label>
-
-          <div className="admin-product-form-actions">
-            {editingProduct ? (
-              <button type="button" className="btn-discard-outline profile-btn-visible" onClick={resetProductForm}>
-                Cancel Edit
-              </button>
-            ) : null}
-            <button className="adm-btn" type="submit" disabled={uploading}>
-              {uploading ? (
-                <LoadingDots label="Loading" size="sm" className="dot-loader--inverse dot-loader--button" />
-              ) : editingProduct ? 'Update Product' : 'Save Product'}
-            </button>
-          </div>
-        </form>
-      </section>
-
-      <section className={`admin-sec ${activeSection === 'orders' ? '' : 'admin-hidden'}`}>
-        <h3 className="admin-sec-title">Recent Orders</h3>
-        {orders.length > 0 ? (
-          <div className="admin-order-filter-bar">
-            <div className="admin-order-filter-top">
-              <div className="admin-order-filters" aria-label="Filter orders by status">
-                {orderFilters.map((filter) => (
-                <button
-                  key={filter.value}
-                  type="button"
-                  className={`admin-order-filter-chip ${orderFilter === filter.value ? 'active' : ''}`}
-                  onClick={() => setOrderFilter(filter.value)}
-                >
-                  <span>{filter.label}</span>
-                  <strong>{orderCounts[filter.value]}</strong>
-                </button>
-              ))}
-            </div>
-
-              <button
-                type="button"
-                className="admin-order-filter-open"
-                onClick={() => setShowOrderFilterModal(true)}
-              >
-                <i className="fa-solid fa-sliders"></i>
-                Filter
-              </button>
-            </div>
-          </div>
-        ) : null}
-        {orders.length === 0 ? (
-          <div className="admin-card">No orders found yet.</div>
-        ) : visibleOrders.length === 0 ? (
-          <div className="admin-card">No {orderFilter} orders found.</div>
-        ) : (
-          visibleOrders.map((o) => (
-            <div key={o.id} className="admin-card admin-order-card">
-              <div className="admin-order-top">
-                <h4>Order #{o.id}</h4>
-                <span>{normalizeOrderStatus(o.status).toUpperCase()}</span>
-              </div>
-              <p>{new Date(o.created_at).toLocaleString()}</p>
-              <p>Products Total: RWF {Number(o.total_amount || 0).toLocaleString()}</p>
-              <p>Delivery Fee: RWF {getDeliveryFee(o.location).toLocaleString()}</p>
-              <p className="admin-order-grand-total">Grand Total: RWF {getOrderGrandTotal(o).toLocaleString()}</p>
-              <div className="status-line">
-                <div className="step completed"><div className="step-icon"><i className="fa-solid fa-receipt"></i></div><span>Placed</span></div>
-                <div className={`step ${['paid', 'processing', 'delivered'].includes(normalizeOrderStatus(o.status)) ? 'completed' : ''}`}><div className="step-icon"><i className="fa-solid fa-credit-card"></i></div><span>Paid</span></div>
-                <div className={`step ${['processing', 'delivered'].includes(normalizeOrderStatus(o.status)) ? 'completed' : ''}`}><div className="step-icon"><i className="fa-solid fa-box-open"></i></div><span>Processing</span></div>
-                <div className={`step ${normalizeOrderStatus(o.status) === 'delivered' ? 'completed' : ''}`}><div className="step-icon"><i className="fa-solid fa-truck-fast"></i></div><span>Delivered</span></div>
-              </div>
-
-              <div className="admin-order-actions-row">
-                <button type="button" className="admin-order-action-btn" onClick={() => setOrderListModal(o)}>
-                  Order List
-                </button>
-                <button type="button" className="admin-order-action-btn admin-order-action-btn-secondary" onClick={() => setCustomerInfoModal(o)}>
-                  Customer Info
-                </button>
-              </div>
-
-              <div className="admin-order-status-select">
-                <label htmlFor={`order-status-${o.id}`}>Update Status</label>
-                <select
-                  id={`order-status-${o.id}`}
-                  value={normalizeOrderStatus(o.status)}
-                  onChange={(e) => updateOrderStatus(o.id, e.target.value)}
-                >
-                  <option value="pending">Pending</option>
-                  <option value="paid">Paid</option>
-                  <option value="processing">Processing</option>
-                  <option value="delivered">Delivered</option>
-                  <option value="canceled">Canceled</option>
-                </select>
-              </div>
-            </div>
-          ))
-        )}
-      </section>
-
-      {showOrderFilterModal ? (
-        <div className="admin-detail-overlay" onClick={() => setShowOrderFilterModal(false)}>
-          <div className="admin-detail-modal admin-order-filter-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="admin-order-filter-modal-head">
-              <div>
-                <h4>Filter Orders</h4>
-                <p>Search by name, date, phone, product, or order details.</p>
-              </div>
-              <button
-                type="button"
-                className="logout-btn"
-                onClick={() => setShowOrderFilterModal(false)}
-                aria-label="Close filter modal"
-              >
-                <i className="fa-solid fa-xmark"></i>
-              </button>
-            </div>
-
-            <div className="admin-order-filter-grid">
-              <label className="admin-order-filter-field">
-                <span>Search</span>
-                <input
-                  type="text"
-                  value={orderSearch}
-                  onChange={(e) => setOrderSearch(e.target.value)}
-                  placeholder="Order ID, name, phone, product..."
-                />
-              </label>
-
-              <label className="admin-order-filter-field">
-                <span>From</span>
-                <input
-                  type="date"
-                  value={orderDateFrom}
-                  onChange={(e) => setOrderDateFrom(e.target.value)}
-                />
-              </label>
-
-              <label className="admin-order-filter-field">
-                <span>To</span>
-                <input
-                  type="date"
-                  value={orderDateTo}
-                  onChange={(e) => setOrderDateTo(e.target.value)}
-                />
-              </label>
-            </div>
-
-            <div className="admin-order-filter-modal-actions">
-              <button
-                type="button"
-                className="admin-order-filter-reset"
-                onClick={() => {
-                  setOrderFilter('all');
-                  setOrderSearch('');
-                  setOrderDateFrom('');
-                  setOrderDateTo('');
-                }}
-              >
-                Reset
-              </button>
-
-              <button
-                type="button"
-                className="adm-btn admin-order-filter-apply"
-                onClick={() => setShowOrderFilterModal(false)}
-              >
-                Apply Filters
-              </button>
-            </div>
+          <div className="admin-central-stat-pill">
+            <strong>{stats.suspended_users}</strong>
+            <span>Suspended users</span>
           </div>
         </div>
-      ) : null}
+      </section>
 
-      <section className={`admin-sec ${activeSection === 'settings' ? '' : 'admin-hidden'}`}>
-        <div className="settings-top-card admin-card">
-          <div className="settings-profile">
-            <div className="settings-avatar">
-              <span>{(user.full_name?.charAt(0) || user.email?.charAt(0) || 'A').toUpperCase()}</span>
-              <button type="button" className="avatar-edit-btn" onClick={() => setShowProfilePanel(true)}>
-                <i className="fa-solid fa-pen"></i>
-              </button>
+      <section className="admin-central-grid">
+        <article className="admin-phone-card">
+          <h2>Seller Approvals</h2>
+          <div className="admin-phone-shell">
+            <div className="admin-phone-topbar">
+              <span>MyShop Central</span>
+              <span>{stats.pending_sellers} pending</span>
             </div>
-            <div>
-              <p className="settings-welcome-text">Welcome back</p>
-              <h3>{user.full_name || 'Admin'}</h3>
-              <small>{user.email}</small>
-            </div>
-          </div>
-          <button type="button" className="logout-btn" onClick={handleLogout} aria-label="Logout">
-            <i className="fa-solid fa-arrow-right-from-bracket"></i>
-          </button>
-        </div>
-
-        {!showProfilePanel ? (
-          <>
-            <div id="settings-overview" className="settings-overview">
-              <div className="settings-grid">
-                <button type="button" className="settings-tile" onClick={() => setShowProfilePanel(true)}>
-                  <span className="settings-tile-icon"><i className="fa-solid fa-user"></i></span>
-                  <div className="tile-text">
-                    <strong>User Profile</strong>
-                    <small>Update name, phone and address</small>
-                  </div>
-                  <i className="fa-solid fa-chevron-right settings-chevron"></i>
-                </button>
-                <button type="button" className="settings-tile" onClick={() => window.alert('Password change is not wired up here yet.')}>
-                  <span className="settings-tile-icon"><i className="fa-solid fa-lock"></i></span>
-                  <div className="tile-text">
-                    <strong>Change Password</strong>
-                    <small>Keep your admin account secure</small>
-                  </div>
-                  <i className="fa-solid fa-chevron-right settings-chevron"></i>
-                </button>
-                <button type="button" className="settings-tile" onClick={() => window.alert('This section is coming soon.')}>
-                  <span className="settings-tile-icon"><i className="fa-solid fa-circle-question"></i></span>
-                  <div className="tile-text">
-                    <strong>FAQs</strong>
-                    <small>Quick answers and help</small>
-                  </div>
-                  <i className="fa-solid fa-chevron-right settings-chevron"></i>
-                </button>
-                <div className="settings-tile switch-tile">
-                  <div className="switch-tile-row">
-                    <span className="settings-tile-icon"><i className="fa-solid fa-bell"></i></span>
-                    <div className="tile-text">
-                      <strong>Push Notifications</strong>
-                      <small>Receive alerts for new orders</small>
+            <div className="admin-phone-body">
+              <div className="admin-phone-sidebar">
+                <i className="fa-solid fa-house"></i>
+                <i className="fa-solid fa-users"></i>
+                <i className="fa-solid fa-user-check"></i>
+                <i className="fa-solid fa-gear"></i>
+              </div>
+              <div className="admin-phone-content">
+                <div className="admin-panel-section">
+                  <h3>New Seller Requests</h3>
+                  <p>Approve sellers only after reviewing their details.</p>
+                </div>
+                <div className="admin-list-stack">
+                  {pendingSellers.length === 0 ? (
+                    <div className="admin-central-empty">No pending seller requests.</div>
+                  ) : (
+                    pendingSellers.map((seller) => (
+                      <div key={seller.id} className="admin-central-item-card">
+                        <div className="admin-central-item-head">
+                          <strong>{getUserLabel(seller)}</strong>
+                          <span className="admin-status-chip pending">Pending</span>
+                        </div>
+                        <p>Store: {seller.business_name || 'No store name'}</p>
+                        <p>Email: {seller.email}</p>
+                        <p>Phone: {seller.phone || 'N/A'}</p>
+                        <div className="admin-central-actions">
+                          <button
+                            type="button"
+                            className="admin-central-btn approve"
+                            onClick={() => void handleUserAction(seller, 'approve_seller')}
+                            disabled={actionLoadingId === seller.id}
+                          >
+                            {actionLoadingId === seller.id ? 'Working...' : 'Approve'}
+                          </button>
+                          <button
+                            type="button"
+                            className="admin-central-btn reject"
+                            onClick={() => void handleUserAction(seller, 'reject_seller')}
+                            disabled={actionLoadingId === seller.id}
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="admin-panel-section">
+                  <h3>Recently Approved</h3>
+                </div>
+                <div className="admin-mini-list">
+                  {recentlyApprovedSellers.slice(0, 4).map((seller) => (
+                    <div key={seller.id} className="admin-mini-row">
+                      <div>
+                        <strong>{seller.business_name || getUserLabel(seller)}</strong>
+                        <small>{seller.email}</small>
+                      </div>
+                      <span className="admin-status-chip verified">Approved</span>
                     </div>
-                  </div>
-                  <label className="switch-input">
-                    <input type="checkbox" checked={notificationsEnabled} onChange={(e) => setNotificationsEnabled(e.target.checked)} />
-                    <span className="switch-slider"></span>
-                  </label>
+                  ))}
                 </div>
-              </div>
-
-              <div className="settings-support-card">
-                <div>
-                  <p>If you have another question, our support team is ready to help.</p>
-                </div>
-                <a href="https://wa.me/250123456789" target="_blank" rel="noreferrer">WhatsApp Us</a>
               </div>
             </div>
-          </>
-        ) : (
-          <div id="settings-profile-panel" className="settings-profile-panel">
-            <header>
-              <div>
-                <h4>User Profile</h4>
-                <p>Edit your personal details</p>
-              </div>
-              <button type="button" className="logout-btn" onClick={() => setShowProfilePanel(false)} aria-label="Close">
-                <i className="fa-solid fa-xmark"></i>
-              </button>
-            </header>
-
-            <form onSubmit={handleSaveProfile}>
-              <label className="adm-label">Full Name</label>
-              <input
-                type="text"
-                className="adm-input"
-                value={profileForm.full_name}
-                onChange={(e) => setProfileForm({ ...profileForm, full_name: e.target.value })}
-                placeholder="Enter full name"
-              />
-
-              <label className="adm-label">Email</label>
-              <input type="email" className="adm-input" value={user.email} readOnly />
-
-              <label className="adm-label">Phone</label>
-              <input
-                type="text"
-                className="adm-input"
-                value={profileForm.phone}
-                onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
-                placeholder="+250..."
-              />
-
-              <label className="adm-label">Address</label>
-              <input
-                type="text"
-                className="adm-input"
-                value={profileForm.address}
-                onChange={(e) => setProfileForm({ ...profileForm, address: e.target.value })}
-                placeholder="Kigali, Rwanda"
-              />
-
-              <div className="settings-form-actions">
-                {hasProfileChanges ? (
-                  <button type="button" className="settings-secondary-btn" onClick={handleDiscardProfile}>
-                    Discard Changes
-                  </button>
-                ) : null}
-                <button type="submit" className="adm-btn" disabled={savingProfile}>
-                  {savingProfile ? (
-                    <LoadingDots label="Loading" size="sm" className="dot-loader--inverse dot-loader--button" />
-                  ) : 'Save'}
-                </button>
-              </div>
-            </form>
           </div>
-        )}
+        </article>
+
+        <article className="admin-phone-card">
+          <h2>Global Product Manager</h2>
+          <div className="admin-phone-shell">
+            <div className="admin-phone-topbar">
+              <span>MyShop Central</span>
+              <span>{stats.total_products} products</span>
+            </div>
+            <div className="admin-phone-body">
+              <div className="admin-phone-sidebar">
+                <i className="fa-solid fa-box"></i>
+                <i className="fa-solid fa-layer-group"></i>
+                <i className="fa-solid fa-store"></i>
+                <i className="fa-solid fa-filter"></i>
+              </div>
+              <div className="admin-phone-content">
+                <div className="admin-search-wrap">
+                  <input
+                    type="text"
+                    value={productSearch}
+                    onChange={(event) => setProductSearch(event.target.value)}
+                    placeholder="Search products or sellers"
+                  />
+                </div>
+                <div className="admin-product-list">
+                  {filteredProducts.slice(0, 7).map((product) => (
+                    <div key={product.id} className="admin-product-row-card">
+                      <div className="admin-product-row-main">
+                        {resolveProductImagePath(product.image) ? (
+                          <img src={resolveProductImagePath(product.image)} alt={product.name} />
+                        ) : (
+                          <div className="admin-product-row-fallback" />
+                        )}
+                        <div>
+                          <strong>{product.name}</strong>
+                          <p>{product.seller_business_name || product.seller_name || 'Unknown seller'}</p>
+                        </div>
+                      </div>
+                      <div className="admin-product-row-meta">
+                        <span>RWF {Number(product.price || 0).toLocaleString()}</span>
+                        <small>Stock {Number(product.stock || 0)}</small>
+                      </div>
+                      <button
+                        type="button"
+                        className="admin-central-btn danger-outline"
+                        onClick={() => void handleDeleteProduct(product)}
+                        disabled={actionLoadingId === `product-${product.id}`}
+                      >
+                        {actionLoadingId === `product-${product.id}` ? 'Removing...' : 'Remove'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article className="admin-phone-card">
+          <h2>Money Monitor</h2>
+          <div className="admin-phone-shell">
+            <div className="admin-phone-topbar">
+              <span>MyShop Central</span>
+              <span>{stats.total_orders} orders</span>
+            </div>
+            <div className="admin-phone-body">
+              <div className="admin-phone-sidebar">
+                <i className="fa-solid fa-wallet"></i>
+                <i className="fa-solid fa-chart-line"></i>
+                <i className="fa-solid fa-chart-pie"></i>
+                <i className="fa-solid fa-chart-column"></i>
+              </div>
+              <div className="admin-phone-content">
+                <div className="admin-money-hero">
+                  <span>Total Platform GMV</span>
+                  <strong>RWF {Number(stats.total_revenue || 0).toLocaleString()}</strong>
+                  <small>Products: RWF {Number(stats.product_sales || 0).toLocaleString()} | Delivery: RWF {Number(stats.delivery_fees || 0).toLocaleString()}</small>
+                </div>
+                <div className="admin-money-grid">
+                  <div className="admin-money-card">
+                    <span>Pending</span>
+                    <strong>{statusCounts.pending || 0}</strong>
+                  </div>
+                  <div className="admin-money-card">
+                    <span>Paid</span>
+                    <strong>{statusCounts.paid || 0}</strong>
+                  </div>
+                  <div className="admin-money-card">
+                    <span>Processing</span>
+                    <strong>{statusCounts.processing || 0}</strong>
+                  </div>
+                  <div className="admin-money-card">
+                    <span>Delivered</span>
+                    <strong>{statusCounts.delivered || 0}</strong>
+                  </div>
+                </div>
+                <div className="admin-chart-card">
+                  <h3>Revenue Trend</h3>
+                  <div className="admin-bar-chart">
+                    {revenueChart.map((item) => (
+                      <div key={item.key} className="admin-bar-column">
+                        <div
+                          className="admin-bar-fill"
+                          style={{ height: `${Math.max(12, (item.revenue / maxRevenue) * 120)}px` }}
+                        />
+                        <span>{item.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article className="admin-phone-card">
+          <h2>User Suspension Control</h2>
+          <div className="admin-phone-shell">
+            <div className="admin-phone-topbar">
+              <span>MyShop Central</span>
+              <span>{stats.suspended_users} suspended</span>
+            </div>
+            <div className="admin-phone-body">
+              <div className="admin-phone-sidebar">
+                <i className="fa-solid fa-user-shield"></i>
+                <i className="fa-solid fa-user-slash"></i>
+                <i className="fa-solid fa-user-check"></i>
+                <i className="fa-solid fa-gear"></i>
+              </div>
+              <div className="admin-phone-content">
+                <div className="admin-search-wrap">
+                  <input
+                    type="text"
+                    value={userSearch}
+                    onChange={(event) => setUserSearch(event.target.value)}
+                    placeholder="Search username, email, phone"
+                  />
+                </div>
+                <div className="admin-panel-section">
+                  <h3>Manage Access</h3>
+                </div>
+                <div className="admin-list-stack">
+                  {filteredUsers.slice(0, 6).map((entry) => (
+                    <div key={entry.id} className="admin-central-item-card">
+                      <div className="admin-central-item-head">
+                        <strong>{getUserLabel(entry)}</strong>
+                        <span className={`admin-status-chip ${String(entry.account_status || 'active').toLowerCase()}`}>
+                          {String(entry.account_status || 'active')}
+                        </span>
+                      </div>
+                      <p>{entry.email}</p>
+                      <p>Type: {getRoleLabel(entry)}</p>
+                      <div className="admin-central-actions">
+                        <button
+                          type="button"
+                          className="admin-central-btn reject"
+                          onClick={() => void handleUserAction(entry, 'suspend')}
+                          disabled={actionLoadingId === entry.id || String(entry.account_status || '').toLowerCase() === 'suspended'}
+                        >
+                          Suspend
+                        </button>
+                        <button
+                          type="button"
+                          className="admin-central-btn danger-outline"
+                          onClick={() => void handleUserAction(entry, 'deactivate')}
+                          disabled={actionLoadingId === entry.id || String(entry.account_status || '').toLowerCase() === 'deactivated'}
+                        >
+                          Deactivate
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="admin-panel-section">
+                  <h3>Currently Suspended</h3>
+                </div>
+                <div className="admin-mini-list">
+                  {suspendedUsers.length === 0 ? (
+                    <div className="admin-central-empty">No suspended users.</div>
+                  ) : (
+                    suspendedUsers.map((entry) => (
+                      <div key={entry.id} className="admin-mini-row">
+                        <div>
+                          <strong>{getUserLabel(entry)}</strong>
+                          <small>{entry.email}</small>
+                        </div>
+                        <button
+                          type="button"
+                          className="admin-central-btn approve"
+                          onClick={() => void handleUserAction(entry, 'reactivate')}
+                          disabled={actionLoadingId === entry.id}
+                        >
+                          Reactivate
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
       </section>
-
-      {orderListModal && (
-        <div className="admin-detail-overlay" onClick={() => setOrderListModal(null)}>
-          <div className="admin-detail-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="admin-detail-head">
-              <h3>Order List #{orderListModal.id}</h3>
-              <button type="button" className="admin-detail-close" onClick={() => setOrderListModal(null)}>
-                <i className="fa-solid fa-xmark"></i>
-              </button>
-            </div>
-            <div className="admin-detail-body">
-              {(orderListModal.items || []).length === 0 ? (
-                <p className="admin-detail-empty">No order items found.</p>
-              ) : (
-                (orderListModal.items || []).map((item) => (
-                  <div key={item.id} className="admin-detail-item-card">
-                    <strong>{item.product_name}</strong>
-                    <span>Quantity: {item.quantity}</span>
-                    <span>Color: {item.color || 'Not selected'}</span>
-                    <span>Size: {item.size || 'Not selected'}</span>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {customerInfoModal && (
-        <div className="admin-detail-overlay" onClick={() => setCustomerInfoModal(null)}>
-          <div className="admin-detail-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="admin-detail-head">
-              <h3>Customer Info</h3>
-              <button type="button" className="admin-detail-close" onClick={() => setCustomerInfoModal(null)}>
-                <i className="fa-solid fa-xmark"></i>
-              </button>
-            </div>
-            <div className="admin-detail-body">
-              <div className="admin-detail-info-grid">
-                <div className="admin-detail-info-row">
-                  <span>Customer ID</span>
-                  <strong>{customerInfoModal.customer?.id || 'N/A'}</strong>
-                </div>
-                <div className="admin-detail-info-row">
-                  <span>Full Name</span>
-                  <strong>{customerInfoModal.full_name || customerInfoModal.customer?.full_name || 'N/A'}</strong>
-                </div>
-                <div className="admin-detail-info-row">
-                  <span>Email</span>
-                  <strong>{customerInfoModal.customer_email || customerInfoModal.customer?.email || 'N/A'}</strong>
-                </div>
-                <div className="admin-detail-info-row">
-                  <span>Phone</span>
-                  <strong>{customerInfoModal.phone || customerInfoModal.customer?.phone || 'N/A'}</strong>
-                </div>
-                <div className="admin-detail-info-row">
-                  <span>Address</span>
-                  <strong>{customerInfoModal.location || customerInfoModal.customer?.address || 'N/A'}</strong>
-                </div>
-                <div className="admin-detail-info-row">
-                  <span>Estimated Distance</span>
-                  <strong>{estimateDeliveryDistanceKm(customerInfoModal.location)} km</strong>
-                </div>
-                <div className="admin-detail-info-row">
-                  <span>Delivery Fee</span>
-                  <strong>RWF {getDeliveryFee(customerInfoModal.location).toLocaleString()}</strong>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <nav className="admin-nav">
-        <button className={`nav-item ${activeSection === 'stats' ? 'active' : ''}`} onClick={() => switchSection('stats')}>
-          <i className="fa-solid fa-chart-line"></i><span>Overview</span>
-        </button>
-        <button className={`nav-item ${activeSection === 'products' ? 'active' : ''}`} onClick={() => switchSection('products')}>
-          <i className="fa-solid fa-box-open"></i><span>Items</span>
-        </button>
-        <div className="fab-placeholder" aria-hidden="true"></div>
-        <button className={`nav-item ${activeSection === 'orders' ? 'active' : ''}`} onClick={() => switchSection('orders')}>
-          <i className="fa-solid fa-cart-shopping"></i><span>Orders</span>
-        </button>
-        <button className={`nav-item ${activeSection === 'settings' ? 'active' : ''}`} onClick={switchToSettings}>
-          <i className="fa-solid fa-gear"></i><span>Settings</span>
-        </button>
-        <button className={`fab-btn ${activeSection === 'upload' ? 'active' : ''}`} onClick={() => switchSection('upload')} aria-label="Add">
-          <i className="fa-solid fa-plus"></i>
-        </button>
-      </nav>
     </main>
   );
 }

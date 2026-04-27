@@ -1,58 +1,41 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-import { getSupabase } from '../../../lib/utils';
+import { getAuthenticatedAccount, supabaseAdmin } from '../../../lib/server-auth';
 
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || ''
-);
-
-async function getAuthenticatedUser(req: NextRequest) {
-  const authHeader = req.headers.get('authorization');
-  if (!authHeader?.startsWith('Bearer ')) {
-    return { ok: false as const, response: NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 }) };
-  }
-
-  const token = authHeader.substring(7);
-  const supabase = getSupabase;
-  const { data: { user }, error } = await supabase.auth.getUser(token);
-  if (error || !user) {
-    return { ok: false as const, response: NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 }) };
-  }
-
-  return { ok: true as const, user };
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : 'Server error';
 }
 
 export async function GET(req: NextRequest) {
   try {
-    const auth = await getAuthenticatedUser(req);
+    const auth = await getAuthenticatedAccount(req);
     if (!auth.ok) return auth.response;
 
     const { data: profile, error } = await supabaseAdmin
       .from('users')
       .select('*')
-      .eq('id', auth.user.id)
+      .eq('id', auth.profile.id)
       .maybeSingle();
 
     if (error || !profile) {
       return NextResponse.json({ success: false, message: 'Profile not found' }, { status: 404 });
     }
 
-    return NextResponse.json({ success: true, user: { ...auth.user, ...profile } });
-  } catch (err: any) {
-    return NextResponse.json({ success: false, message: err.message || 'Server error' }, { status: 500 });
+    return NextResponse.json({ success: true, user: { ...auth.authUser, ...profile } });
+  } catch (err: unknown) {
+    return NextResponse.json({ success: false, message: getErrorMessage(err) }, { status: 500 });
   }
 }
 
 export async function PATCH(req: NextRequest) {
   try {
-    const auth = await getAuthenticatedUser(req);
+    const auth = await getAuthenticatedAccount(req);
     if (!auth.ok) return auth.response;
 
     const body = await req.json();
     const full_name = (body.full_name || '').trim();
     const phone = (body.phone || '').trim();
     const address = (body.address || '').trim();
+    const business_name = (body.business_name || '').trim();
 
     if (full_name.length > 100) {
       return NextResponse.json({ success: false, message: 'Full name must be 100 characters or less' }, { status: 400 });
@@ -60,11 +43,19 @@ export async function PATCH(req: NextRequest) {
     if (phone.length > 20) {
       return NextResponse.json({ success: false, message: 'Phone must be 20 characters or less' }, { status: 400 });
     }
+    if (business_name.length > 120) {
+      return NextResponse.json({ success: false, message: 'Business name must be 120 characters or less' }, { status: 400 });
+    }
 
     const { data, error } = await supabaseAdmin
       .from('users')
-      .update({ full_name, phone, address })
-      .eq('id', auth.user.id)
+      .update({
+        full_name,
+        phone,
+        address,
+        ...(auth.profile.role === 'seller' ? { business_name } : {}),
+      })
+      .eq('id', auth.profile.id)
       .select('*')
       .single();
 
@@ -72,8 +63,8 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ success: false, message: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, user: { ...auth.user, ...data } });
-  } catch (err: any) {
-    return NextResponse.json({ success: false, message: err.message || 'Server error' }, { status: 500 });
+    return NextResponse.json({ success: true, user: { ...auth.authUser, ...data } });
+  } catch (err: unknown) {
+    return NextResponse.json({ success: false, message: getErrorMessage(err) }, { status: 500 });
   }
 }

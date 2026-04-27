@@ -14,6 +14,11 @@ export default function DashboardPage() {
       return;
     }
 
+    if (user.role === 'seller') {
+      router.replace('/seller');
+      return;
+    }
+
     if (user.role === 'admin') {
       router.replace('/admin');
       return;

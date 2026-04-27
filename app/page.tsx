@@ -1,15 +1,20 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { safeFetch, getStoredUser, normalizeProductImages, resolveProductImagePath } from "../services/api";
 import { Product, CartItem, User, Review } from "../types";
 import { supabase } from "../lib/supabase";
 import { useConfirm } from "../components/ConfirmProvider";
 import LoadingDots from "../components/LoadingDots";
+import { useCheckoutLocation } from "../hooks/useCheckoutLocation";
+import { BUSINESS_HQ, calculateDeliveryQuote } from "../lib/delivery";
 
 const PENDING_PRODUCT_KEY = 'shopcorner_pending_product';
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : 'Something went wrong.';
+}
 
 export default function Home() {
   const confirm = useConfirm();
@@ -45,6 +50,10 @@ export default function Home() {
   // Review Form State
   const [newReviewText, setNewReviewText] = useState('');
   const [newReviewRating, setNewReviewRating] = useState(5);
+  const { currentLocation, hasLocation, locationError, requestCurrentLocation, requestingLocation } = useCheckoutLocation();
+  const deliveryQuote = currentLocation ? calculateDeliveryQuote(currentLocation.latitude, currentLocation.longitude) : null;
+  const numericCartTotal = Number(cartTotal || 0);
+  const orderGrandTotal = numericCartTotal + Number(deliveryQuote?.deliveryFee || 0);
 
   // Slide state (moved up to avoid Rules of Hooks violation before early return)
   const [currentSlide, setCurrentSlide] = useState(0);
@@ -170,7 +179,7 @@ export default function Home() {
       if (cartRes.status === 'fulfilled' && cartRes.value.success) {
         setCartCount(cartRes.value.cart_count || 0);
         setCartItems(cartRes.value.cart_items || []);
-        setCartTotal(cartRes.value.cart_total || 0);
+        setCartTotal(Number(cartRes.value.cart_total || 0));
       }
     } catch (e) {
       console.warn('Error loading initial data', e);
@@ -185,7 +194,7 @@ export default function Home() {
       if (cartRes.success) {
         setCartCount(cartRes.cart_count || 0);
         setCartItems(cartRes.cart_items || []);
-        setCartTotal(cartRes.cart_total || 0);
+        setCartTotal(Number(cartRes.cart_total || 0));
         window.dispatchEvent(new CustomEvent('cartUpdated'));
       }
     } catch (e) {
@@ -231,8 +240,8 @@ export default function Home() {
       } else {
         window.alert(res.message || 'Unable to add item to cart.');
       }
-    } catch (e: any) {
-      window.alert(e?.message || 'Error adding item to cart.');
+    } catch (e: unknown) {
+      window.alert(getErrorMessage(e) || 'Error adding item to cart.');
     }
   };
 
@@ -290,8 +299,8 @@ export default function Home() {
         body: JSON.stringify({ action: 'remove', cart_id: cartId }),
       });
       await loadCartData();
-    } catch (err: any) {
-      window.alert(err?.message || 'Could not remove item from cart');
+    } catch (err: unknown) {
+      window.alert(getErrorMessage(err) || 'Could not remove item from cart');
     }
   };
 
@@ -314,9 +323,16 @@ export default function Home() {
       return;
     }
 
+    const deliveryLocation = currentLocation || await requestCurrentLocation();
+    if (!deliveryLocation) {
+      window.alert('Please allow location access so we can save your live delivery location with this order.');
+      return;
+    }
+
+    const confirmedQuote = calculateDeliveryQuote(deliveryLocation.latitude, deliveryLocation.longitude);
     const confirmed = await confirm({
       title: 'Place Order',
-      message: 'Are you sure you want to place this order?',
+      message: `Are you sure you want to place this order?\n\nDelivery location:\n${deliveryLocation.label}\n\nDistance from ${BUSINESS_HQ.district}: ${confirmedQuote.distanceKm.toFixed(2)} km\nDelivery fee: RWF ${confirmedQuote.deliveryFee.toLocaleString()}`,
       confirmText: 'Place',
       cancelText: 'Cancel',
       iconClass: 'fa-solid fa-receipt',
@@ -327,6 +343,7 @@ export default function Home() {
     try {
       const result = await safeFetch<{ success: boolean; message?: string }>('/api/orders', {
         method: 'POST',
+        body: JSON.stringify({ delivery_location: deliveryLocation }),
       });
       if (!result.success) {
         window.alert(result.message || 'Could not place order');
@@ -341,8 +358,8 @@ export default function Home() {
         iconClass: 'fa-solid fa-circle-check',
         hideCancel: true,
       });
-    } catch (err: any) {
-      window.alert(err?.message || 'Failed to place order');
+    } catch (err: unknown) {
+      window.alert(getErrorMessage(err) || 'Failed to place order');
     } finally {
       setPlacingOrder(false);
     }
@@ -479,6 +496,7 @@ export default function Home() {
         </div>
         <div className="product-info">
           <p className="title">{product.name}</p>
+          {product.seller_business_name ? <p className="seller-label">By {product.seller_business_name}</p> : null}
           {product.badge && <p className="badge">{product.badge}</p>}
           <p className="price">
             RWF<span className="big-price">{Number(product.price).toFixed(2)}</span>
@@ -607,8 +625,43 @@ export default function Home() {
               </div>
             </div>
             <div className="cart-modal-footer">
-              <div className="cart-total-display">
-                Total: <span id="cart-total-amount">RWF {cartTotal}</span>
+              <div className="checkout-location-card">
+                <div className="checkout-location-row">
+                  <div>
+                    <p className="checkout-location-label">Delivery location</p>
+                    <p className="checkout-location-meta">
+                      {hasLocation
+                        ? currentLocation?.label
+                        : 'Required for shipping. Share your live location so the order uses your real delivery point.'}
+                    </p>
+                    {!hasLocation && locationError ? (
+                      <p className="checkout-location-error">{locationError}</p>
+                    ) : null}
+                    {deliveryQuote ? (
+                      <p className="checkout-location-fee">
+                        {deliveryQuote.distanceKm.toFixed(2)} km from {BUSINESS_HQ.district} | Delivery fee RWF {deliveryQuote.deliveryFee.toLocaleString()}
+                      </p>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    className="checkout-location-action"
+                    onClick={() => void requestCurrentLocation()}
+                    disabled={requestingLocation || placingOrder}
+                  >
+                    {requestingLocation ? 'Checking...' : hasLocation ? 'Refresh' : 'Use My Live Location'}
+                  </button>
+                </div>
+              </div>
+              {deliveryQuote ? (
+                <div className="cart-total-display checkout-total-breakdown">
+                  <span>Delivery Fee</span>
+                  <span>RWF {Number(deliveryQuote.deliveryFee).toLocaleString()}</span>
+                </div>
+              ) : null}
+              <div className="cart-total-display checkout-total-breakdown checkout-total-final">
+                <span>Total</span>
+                <span id="cart-total-amount">RWF {Number(orderGrandTotal).toLocaleString()}</span>
               </div>
               <button
                 id="place-order-btn"
@@ -720,6 +773,7 @@ export default function Home() {
                   <p className="detail-description">{selectedProduct.description || "No description available for this product."}</p>
                   <div className="detail-meta">
                     {selectedProduct.category && <span>Category: {selectedProduct.category}</span>}
+                    {selectedProduct.seller_business_name && <span>Seller: {selectedProduct.seller_business_name}</span>}
                     <span>Sold: {selectedProduct.sold || 0}+</span>
                   </div>
 

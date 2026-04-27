@@ -18,6 +18,9 @@ type ProtectedAuthState = {
 };
 
 const EMAIL_VERIFICATION_MESSAGE = 'Please verify your email before accessing this page';
+const SELLER_APPROVAL_MESSAGE = 'Your seller account is waiting for admin approval.';
+const SUSPENDED_ACCOUNT_MESSAGE = 'This account is suspended. Please contact the admin team.';
+const DEACTIVATED_ACCOUNT_MESSAGE = 'This account has been deactivated. Please contact the admin team.';
 
 export function useProtectedAuth(options: UseProtectedAuthOptions = {}) {
   const { redirectTo = '/login', requiredRole } = options;
@@ -57,6 +60,41 @@ export function useProtectedAuth(options: UseProtectedAuthOptions = {}) {
           user: serverUser,
           accessBlocked: true,
           message: EMAIL_VERIFICATION_MESSAGE,
+        });
+        return;
+      }
+
+      const accountStatus = String(serverUser.account_status || 'active').toLowerCase();
+      const sellerApprovalStatus = String(serverUser.seller_approval_status || (serverUser.role === 'seller' ? 'pending' : 'approved')).toLowerCase();
+
+      if (accountStatus === 'suspended') {
+        setState({
+          loading: false,
+          user: serverUser,
+          accessBlocked: true,
+          message: SUSPENDED_ACCOUNT_MESSAGE,
+        });
+        return;
+      }
+
+      if (accountStatus === 'deactivated') {
+        setState({
+          loading: false,
+          user: serverUser,
+          accessBlocked: true,
+          message: DEACTIVATED_ACCOUNT_MESSAGE,
+        });
+        return;
+      }
+
+      if (requiredRole === 'seller' && sellerApprovalStatus !== 'approved') {
+        setState({
+          loading: false,
+          user: serverUser,
+          accessBlocked: true,
+          message: sellerApprovalStatus === 'rejected'
+            ? 'Your seller request was rejected. Please contact the admin team.'
+            : SELLER_APPROVAL_MESSAGE,
         });
         return;
       }

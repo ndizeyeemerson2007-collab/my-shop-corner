@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getSupabase } from '../../../lib/utils';
+import { reverseGeocodeLocation } from '../../../lib/reverse-geocode';
+import { calculateDeliveryQuote } from '../../../lib/delivery';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || '',
@@ -22,12 +24,36 @@ function normalizeDatabaseError(message: string | undefined) {
     return 'Database schema mismatch: the live orders table is outdated. Run db/fix-orders-schema.sql in Supabase SQL Editor.';
   }
 
+  if (message.includes("Could not find the 'delivery_fee' column of 'orders'")) {
+    return 'Database schema mismatch: orders.delivery_fee is missing. Run orders-schema.sql in Supabase SQL Editor to add delivery columns.';
+  }
+
+  if (message.includes("Could not find the 'delivery_distance_km' column of 'orders'")) {
+    return 'Database schema mismatch: orders.delivery_distance_km is missing. Run orders-schema.sql in Supabase SQL Editor to add delivery columns.';
+  }
+
   return message;
 }
 
 function getSessionId(req: NextRequest) {
   return req.headers.get('X-Session-Id') || 'anonymous_session';
 }
+
+type DeliveryLocationInput = {
+  accuracy?: number | null;
+  capturedAt?: string;
+  label?: string;
+  latitude?: number;
+  longitude?: number;
+};
+
+type OrderUserRow = {
+  id: string;
+  email?: string | null;
+  full_name?: string | null;
+  phone?: string | null;
+  address?: string | null;
+};
 
 async function requireUser(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
@@ -60,6 +86,43 @@ function canUserCancelOrder(status: string | null | undefined) {
   return normalized === 'pending' || normalized === 'paid';
 }
 
+async function normalizeDeliveryLocation(input: DeliveryLocationInput | null | undefined, acceptLanguage?: string | null) {
+  if (!input) return null;
+
+  const latitude = Number(input.latitude);
+  const longitude = Number(input.longitude);
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return null;
+  }
+
+  const resolved = await reverseGeocodeLocation({
+    accuracy: input.accuracy,
+    acceptLanguage,
+    capturedAt: input.capturedAt,
+    latitude,
+    longitude,
+  });
+
+  const clientLabel = String(input.label || '').trim();
+  if (clientLabel && !resolved.label) {
+    return clientLabel;
+  }
+
+  return resolved.label || clientLabel || null;
+}
+
+function getDeliveryCoordinates(input: DeliveryLocationInput | null | undefined) {
+  const latitude = Number(input?.latitude);
+  const longitude = Number(input?.longitude);
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return null;
+  }
+
+  return { latitude, longitude };
+}
+
 export async function GET(request: NextRequest) {
   try {
     const auth = await requireUser(request);
@@ -67,16 +130,7 @@ export async function GET(request: NextRequest) {
 
     const { data: orders, error } = await supabaseAdmin
       .from('orders')
-      .select(`
-        *,
-        users:user_id (
-          id,
-          email,
-          full_name,
-          phone,
-          address
-        )
-      `)
+      .select('*')
       .eq('user_id', auth.user.id)
       .order('created_at', { ascending: false })
       .limit(50);
@@ -86,7 +140,25 @@ export async function GET(request: NextRequest) {
     }
 
     const orderIds = (orders || []).map((o: any) => o.id);
+    const userIds = Array.from(new Set((orders || []).map((o: any) => String(o.user_id || '')).filter(Boolean)));
     let itemsByOrder: Record<string, any[]> = {};
+    let usersById: Record<string, OrderUserRow> = {};
+
+    if (userIds.length > 0) {
+      const { data: users, error: usersError } = await supabaseAdmin
+        .from('users')
+        .select('id, email, full_name, phone, address')
+        .in('id', userIds);
+
+      if (usersError) {
+        return NextResponse.json({ success: false, message: normalizeDatabaseError(usersError.message) }, { status: 500 });
+      }
+
+      usersById = (users || []).reduce((acc: Record<string, OrderUserRow>, user: OrderUserRow) => {
+        acc[String(user.id)] = user;
+        return acc;
+      }, {});
+    }
 
     if (orderIds.length > 0) {
       const { data: items } = await supabaseAdmin
@@ -111,7 +183,7 @@ export async function GET(request: NextRequest) {
 
     const hydratedOrders = (orders || []).map((order: any) => ({
       ...order,
-      customer: order.users || null,
+      customer: usersById[String(order.user_id)] || null,
       items: itemsByOrder[String(order.id)] || [],
     }));
 
@@ -125,6 +197,13 @@ export async function POST(request: NextRequest) {
   try {
     const auth = await requireUser(request);
     if (!auth.ok) return auth.response;
+    const body = await request.json().catch(() => ({}));
+    const deliveryLocation = await normalizeDeliveryLocation(body?.delivery_location, request.headers.get('accept-language'));
+    const deliveryCoordinates = getDeliveryCoordinates(body?.delivery_location);
+
+    if (!deliveryLocation || !deliveryCoordinates) {
+      return NextResponse.json({ success: false, message: 'Live delivery location is required before placing an order.' }, { status: 400 });
+    }
 
     const sessionId = getSessionId(request);
 
@@ -142,10 +221,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, message: 'Cart is empty' }, { status: 400 });
     }
 
-    const totalAmount = cartItems.reduce((sum: number, item: any) => {
+    const productsTotal = cartItems.reduce((sum: number, item: any) => {
       const price = Number(item.products?.price || 0);
       return sum + price * Number(item.quantity || 1);
     }, 0);
+    const deliveryQuote = calculateDeliveryQuote(deliveryCoordinates.latitude, deliveryCoordinates.longitude);
+    const totalAmount = productsTotal + deliveryQuote.deliveryFee;
 
     const { data: newOrder, error: orderError } = await supabaseAdmin
       .from('orders')
@@ -154,6 +235,11 @@ export async function POST(request: NextRequest) {
         session_id: sessionId,
         status: 'pending',
         total_amount: totalAmount,
+        delivery_distance_km: deliveryQuote.distanceKm,
+        delivery_fee: deliveryQuote.deliveryFee,
+        full_name: auth.profile?.full_name || null,
+        phone: auth.profile?.phone || null,
+        location: deliveryLocation,
       }])
       .select('*')
       .single();

@@ -77,6 +77,8 @@ export default function Header() {
   const [trendProducts, setTrendProducts] = useState<Product[]>([]);
   const [loadingSearch, setLoadingSearch] = useState(false);
   const deferredSearchQuery = useDeferredValue(searchQuery);
+  const accountHref = user?.role === 'seller' ? '/seller' : '/profile';
+  const accountLabel = user?.role === 'seller' ? 'Seller Control' : 'Profile';
 
   // Timer for deals
   const [hours, setHours] = useState(2);
@@ -368,11 +370,22 @@ export default function Header() {
               <li className="separator"></li>
               {user ? (
                 <>
-                  <li><Link href="/profile" id="profile-link" onClick={closeSidebar}>Profile</Link></li>
+                  <li>
+                    <Link
+                      href={accountHref}
+                      id="profile-link"
+                      onClick={closeSidebar}
+                    >
+                      {accountLabel}
+                    </Link>
+                  </li>
                   <li><a href="#" onClick={(e) => { e.preventDefault(); closeSidebar(); handleLogout(); }} className="logout-text" id="logout-link">Logout</a></li>
                 </>
               ) : (
-                <li><Link href="/login" id="login-link" onClick={closeSidebar}>Login</Link></li>
+                <>
+                  <li><Link href="/login" id="login-link" onClick={closeSidebar}>Login</Link></li>
+                  <li><Link href="/seller/login" onClick={closeSidebar}>Seller Portal</Link></li>
+                </>
               )}
             </ul>
           </div>

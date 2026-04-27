@@ -13,8 +13,15 @@ CREATE TABLE users (
   address TEXT,
   profile_pic VARCHAR(255) DEFAULT 'assets/img/default-avatar.png',
   role VARCHAR(10) NOT NULL DEFAULT 'user',
+  account_status VARCHAR(20) NOT NULL DEFAULT 'active',
+  seller_approval_status VARCHAR(20) NOT NULL DEFAULT 'approved',
+  business_name VARCHAR(120),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS account_status VARCHAR(20) NOT NULL DEFAULT 'active';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS seller_approval_status VARCHAR(20) NOT NULL DEFAULT 'approved';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS business_name VARCHAR(120);
 
 -- Step 3: Create indexes for performance
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);

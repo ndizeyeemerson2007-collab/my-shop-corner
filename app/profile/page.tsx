@@ -13,7 +13,10 @@ type UserOrder = {
   id: number;
   status: string;
   total_amount: number;
+  delivery_distance_km?: number | null;
+  delivery_fee?: number | null;
   created_at: string;
+  location?: string | null;
   customer?: {
     full_name?: string | null;
     phone?: string | null;
@@ -301,6 +304,13 @@ export default function ProfilePage() {
                 <p className="order-card-meta">
                   Contact: {order.customer?.full_name || user.full_name || user.email}
                   {order.customer?.phone ? ` | ${order.customer.phone}` : ''}
+                </p>
+                <p className="order-card-meta">
+                  Delivery: {order.location || order.customer?.address || 'No saved delivery location'}
+                </p>
+                <p className="order-card-meta">
+                  Delivery fee: RWF {Number(order.delivery_fee || 0).toLocaleString()}
+                  {order.delivery_distance_km ? ` | ${Number(order.delivery_distance_km).toFixed(2)} km from Kicukiro HQ` : ''}
                 </p>
                 <p className="order-card-total">Total: RWF {Number(order.total_amount || 0).toLocaleString()}</p>
                 {(order.items || []).map((item) => (

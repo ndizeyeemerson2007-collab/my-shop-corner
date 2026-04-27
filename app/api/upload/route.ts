@@ -2,44 +2,12 @@ import { mkdir, access, writeFile } from 'fs/promises';
 import path from 'path';
 import { constants as fsConstants } from 'fs';
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-import { getSupabase } from '../../../lib/utils';
+import { forbiddenResponse, getAuthenticatedAccount, hasRole } from '../../../lib/server-auth';
 
 export const runtime = 'nodejs';
 
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || ''
-);
-
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const uploadDirectory = path.join(process.cwd(), 'public', 'upload');
-
-async function requireAdmin(request: NextRequest) {
-  const authHeader = request.headers.get('authorization');
-  if (!authHeader?.startsWith('Bearer ')) {
-    return { ok: false as const, response: NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 }) };
-  }
-
-  const token = authHeader.substring(7);
-  const supabase = getSupabase;
-  const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-  if (authError || !user) {
-    return { ok: false as const, response: NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 }) };
-  }
-
-  const { data: profile, error: profileError } = await supabaseAdmin
-    .from('users')
-    .select('id, role')
-    .eq('id', user.id)
-    .maybeSingle();
-
-  if (profileError || !profile || profile.role !== 'admin') {
-    return { ok: false as const, response: NextResponse.json({ success: false, message: 'Forbidden' }, { status: 403 }) };
-  }
-
-  return { ok: true as const, user };
-}
 
 function sanitizeFileName(fileName: string) {
   const extension = path.extname(fileName).toLowerCase();
@@ -71,10 +39,17 @@ async function resolveAvailableFileName(initialFileName: string) {
   }
 }
 
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : 'Internal Server Error';
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const adminCheck = await requireAdmin(request);
-    if (!adminCheck.ok) return adminCheck.response;
+    const auth = await getAuthenticatedAccount(request);
+    if (!auth.ok) return auth.response;
+    if (!hasRole(auth.profile, ['seller'])) {
+      return forbiddenResponse();
+    }
 
     const formData = await request.formData();
     const files = formData.getAll('files').filter((entry): entry is File => entry instanceof File);
@@ -107,7 +82,6 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, paths: storedPaths });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Internal Server Error';
-    return NextResponse.json({ success: false, message }, { status: 500 });
+    return NextResponse.json({ success: false, message: getErrorMessage(error) }, { status: 500 });
   }
 }

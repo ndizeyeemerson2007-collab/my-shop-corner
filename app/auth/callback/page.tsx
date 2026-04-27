@@ -61,7 +61,11 @@ export default function AuthCallbackPage() {
 
         window.dispatchEvent(new CustomEvent('userLogin'));
         setMessage('Email verified. Redirecting to your dashboard.');
-        router.replace('/dashboard');
+        router.replace(
+          currentUser.role === 'seller'
+            ? '/seller'
+            : '/dashboard'
+        );
       } catch (error) {
         console.error('Auth callback error:', error);
         if (!active) return;

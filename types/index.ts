@@ -13,6 +13,14 @@ export interface Product {
   is_trend?: boolean;
   colors?: string;
   sizes?: string;
+  seller_id?: string;
+  seller_name?: string;
+  seller_business_name?: string;
+  seller?: {
+    id?: string;
+    full_name?: string | null;
+    business_name?: string | null;
+  } | null;
 }
 
 export interface CartItem {
@@ -33,6 +41,9 @@ export interface User {
   phone?: string;
   address?: string;
   role?: string;
+  account_status?: string;
+  seller_approval_status?: string;
+  business_name?: string;
   email_confirmed_at?: string | null;
 }
 

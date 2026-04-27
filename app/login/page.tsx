@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import LoadingDots from '../../components/LoadingDots';
@@ -255,6 +256,11 @@ export default function LoginPage() {
           >
             {mode === 'login' ? 'Create Account' : 'Sign In'}
           </button>
+        </div>
+
+        <div className="auth-toggle">
+          <span>Want to sell on the site?</span>
+          <Link href="/seller/login" className="auth-link">Open seller portal</Link>
         </div>
       </section>
     </main>
