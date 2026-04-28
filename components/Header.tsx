@@ -322,6 +322,10 @@ export default function Header() {
     router.refresh();
   };
 
+  if (pathname.startsWith('/admin')) {
+    return null;
+  }
+
   return (
     <>
       <header className={`main-header ${isScrolled ? 'scrolled-bg' : ''}`} id="main-header">
