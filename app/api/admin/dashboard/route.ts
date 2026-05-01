@@ -80,7 +80,7 @@ export async function GET(request: NextRequest) {
         .or('badge.is.null,badge.neq.__archived__'),
       supabaseAdmin
         .from('orders')
-        .select('id, total_amount, delivery_fee, delivery_distance_km, status, created_at, user_id')
+        .select('id, total_amount, delivery_fee, delivery_distance_km, status, created_at, user_id, full_name')
         .order('created_at', { ascending: false }),
     ]);
 
