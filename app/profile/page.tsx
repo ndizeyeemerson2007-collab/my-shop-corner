@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { handleLogoutLocal, safeFetch } from '../../services/api';
 import { User } from '../../types';
 import { useConfirm } from '../../components/ConfirmProvider';
@@ -27,16 +27,189 @@ type UserOrder = {
     id: number;
     product_name: string;
     quantity: number;
+    price?: number | null;
     color?: string | null;
     size?: string | null;
   }>;
 };
 
+type FollowedSeller = {
+  id: string;
+  full_name?: string | null;
+  business_name?: string | null;
+  image?: string | null;
+};
+
+type OrderNotification = {
+  id: string;
+  icon: string;
+  title: string;
+  body: string;
+  time: string;
+  kind: 'placed' | 'paid';
+};
+
 type SettingsPanel = 'overview' | 'profile' | 'password';
+
+const NOTIFICATION_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+function getNotificationSeenKey(userId: string) {
+  return `shopcorner_seen_notifications_${userId}`;
+}
+
+function readSeenNotifications(userId: string) {
+  if (typeof window === 'undefined') return {} as Record<string, string>;
+
+  try {
+    const raw = window.localStorage.getItem(getNotificationSeenKey(userId));
+    if (!raw) return {};
+
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeSeenNotifications(userId: string, value: Record<string, string>) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(getNotificationSeenKey(userId), JSON.stringify(value));
+}
+
+function buildOrderNotifications(orders: UserOrder[]): OrderNotification[] {
+  return orders
+    .flatMap((order) => {
+      const normalized = String(order.status || '').toLowerCase();
+      const placedNotice: OrderNotification = {
+        id: `placed-${order.id}`,
+        icon: 'fa-solid fa-bag-shopping',
+        title: `Order #${order.id} made`,
+        body: `Your order for RWF ${Number(order.total_amount || 0).toLocaleString()} was placed successfully.`,
+        time: order.created_at,
+        kind: 'placed',
+      };
+
+      if (['paid', 'processing', 'delivered'].includes(normalized)) {
+        return [
+          {
+            id: `paid-${order.id}`,
+            icon: 'fa-solid fa-wallet',
+            title: `Order #${order.id} paid`,
+            body: 'Seller confirmed your order payment.',
+            time: order.created_at,
+            kind: 'paid' as const,
+          },
+          placedNotice,
+        ];
+      }
+
+      return [placedNotice];
+    })
+    .sort((a, b) => {
+      if (a.kind !== b.kind) {
+        return a.kind === 'paid' ? -1 : 1;
+      }
+
+      return new Date(b.time).getTime() - new Date(a.time).getTime();
+    });
+}
+
+function sanitizePdfText(value: string) {
+  return value.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+}
+
+function wrapPdfText(value: string, maxLength = 82) {
+  const words = value.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let current = '';
+
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length <= maxLength) {
+      current = next;
+      continue;
+    }
+
+    if (current) {
+      lines.push(current);
+    }
+    current = word;
+  }
+
+  if (current) {
+    lines.push(current);
+  }
+
+  return lines.length > 0 ? lines : [''];
+}
+
+function buildPdfBlob(lines: string[]) {
+  const pageWidth = 595;
+  const pageHeight = 842;
+  const left = 48;
+  const top = 790;
+  const lineHeight = 16;
+  const linesPerPage = 44;
+
+  const pages: string[][] = [];
+  for (let index = 0; index < lines.length; index += linesPerPage) {
+    pages.push(lines.slice(index, index + linesPerPage));
+  }
+
+  const objects: string[] = [];
+  const addObject = (content: string) => {
+    objects.push(content);
+    return objects.length;
+  };
+
+  const fontObjectId = addObject('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+  const pageObjectIds: number[] = [];
+  const contentObjectIds: number[] = [];
+
+  for (const pageLines of pages) {
+    const textCommands = pageLines.map((line, lineIndex) => {
+      const y = top - lineIndex * lineHeight;
+      return `BT /F1 11 Tf 1 0 0 1 ${left} ${y} Tm (${sanitizePdfText(line)}) Tj ET`;
+    }).join('\n');
+
+    const stream = `<< /Length ${textCommands.length} >>\nstream\n${textCommands}\nendstream`;
+    const contentObjectId = addObject(stream);
+    contentObjectIds.push(contentObjectId);
+    pageObjectIds.push(addObject(''));
+  }
+
+  const pagesObjectId = addObject('');
+
+  pageObjectIds.forEach((pageObjectId, index) => {
+    objects[pageObjectId - 1] = `<< /Type /Page /Parent ${pagesObjectId} 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 ${fontObjectId} 0 R >> >> /Contents ${contentObjectIds[index]} 0 R >>`;
+  });
+
+  objects[pagesObjectId - 1] = `<< /Type /Pages /Count ${pageObjectIds.length} /Kids [${pageObjectIds.map((id) => `${id} 0 R`).join(' ')}] >>`;
+  const catalogObjectId = addObject(`<< /Type /Catalog /Pages ${pagesObjectId} 0 R >>`);
+
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+
+  objects.forEach((object, index) => {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+
+  const xrefOffset = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n`;
+  pdf += '0000000000 65535 f \n';
+  offsets.slice(1).forEach((offset) => {
+    pdf += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  });
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root ${catalogObjectId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+
+  return new Blob([pdf], { type: 'application/pdf' });
+}
 
 export default function ProfilePage() {
   const confirm = useConfirm();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { loading, user: protectedUser, accessBlocked, message } = useProtectedAuth();
   const [user, setUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState<'dash' | 'orders' | 'settings'>('dash');
@@ -45,6 +218,7 @@ export default function ProfilePage() {
   const [savingPassword, setSavingPassword] = useState(false);
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [orders, setOrders] = useState<UserOrder[]>([]);
+  const [followedSellers, setFollowedSellers] = useState<FollowedSeller[]>([]);
   const [profileForm, setProfileForm] = useState({ full_name: '', phone: '', address: '' });
   const [profileOriginal, setProfileOriginal] = useState({ full_name: '', phone: '', address: '' });
   const [passwordForm, setPasswordForm] = useState({
@@ -69,7 +243,17 @@ export default function ProfilePage() {
     setProfileForm(mapped);
     setProfileOriginal(mapped);
     loadOrders();
+    loadFollowedSellers();
   }, [accessBlocked, protectedUser]);
+
+  useEffect(() => {
+    const requestedTab = searchParams.get('tab');
+    if (requestedTab !== 'dash' && requestedTab !== 'orders' && requestedTab !== 'settings') {
+      return;
+    }
+
+    setActiveTab(requestedTab);
+  }, [searchParams]);
 
   const loadOrders = async () => {
     try {
@@ -79,6 +263,35 @@ export default function ProfilePage() {
       }
     } catch {
       setOrders([]);
+    }
+  };
+
+  const loadFollowedSellers = async () => {
+    try {
+      const result = await safeFetch<{ success: boolean; followed_sellers?: FollowedSeller[] }>('/api/follows');
+      if (result.success) {
+        setFollowedSellers(result.followed_sellers || []);
+      }
+    } catch {
+      setFollowedSellers([]);
+    }
+  };
+
+  const handleUnfollowSeller = async (sellerId: string) => {
+    try {
+      const result = await safeFetch<{ success: boolean; message?: string }>('/api/follows', {
+        method: 'DELETE',
+        body: JSON.stringify({ seller_id: sellerId }),
+      });
+
+      if (!result.success) {
+        window.alert(result.message || 'Could not unfollow seller');
+        return;
+      }
+
+      setFollowedSellers((current) => current.filter((seller) => seller.id !== sellerId));
+    } catch (err: unknown) {
+      window.alert(err instanceof Error ? err.message : 'Could not unfollow seller');
     }
   };
 
@@ -154,8 +367,8 @@ export default function ProfilePage() {
       } else {
         window.alert(result.message || 'Failed to update profile');
       }
-    } catch (err: any) {
-      window.alert(err?.message || 'Could not save changes');
+    } catch (err: unknown) {
+      window.alert(err instanceof Error ? err.message : 'Could not save changes');
     } finally {
       setSavingProfile(false);
     }
@@ -181,8 +394,8 @@ export default function ProfilePage() {
       } else {
         window.alert(result.message || 'Failed to update password');
       }
-    } catch (err: any) {
-      window.alert(err?.message || 'Could not update password');
+    } catch (err: unknown) {
+      window.alert(err instanceof Error ? err.message : 'Could not update password');
     } finally {
       setSavingPassword(false);
     }
@@ -191,7 +404,7 @@ export default function ProfilePage() {
   const statusClass = (status: string) => `order-status status-${String(status || '').toLowerCase()}`;
   const canCancelOrder = (status: string) => {
     const normalized = String(status || '').toLowerCase();
-    return normalized === 'pending' || normalized === 'paid';
+    return normalized === 'pending';
   };
 
   const handleCancelOrder = async (orderId: number) => {
@@ -216,10 +429,101 @@ export default function ProfilePage() {
       }
 
       await loadOrders();
-    } catch (err: any) {
-      window.alert(err?.message || 'Could not cancel order');
+    } catch (err: unknown) {
+      window.alert(err instanceof Error ? err.message : 'Could not cancel order');
     }
   };
+
+  const handleExportOrder = (order: UserOrder) => {
+    if (typeof window === 'undefined') return;
+
+    const itemTotal = (order.items || []).reduce(
+      (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0),
+      0,
+    );
+    const lines = [
+      'ShopCorner Order Document',
+      `Order #${order.id}`,
+      '',
+      `Status: ${order.status}`,
+      `Date: ${new Date(order.created_at).toLocaleString()}`,
+      `Customer: ${order.customer?.full_name || user?.full_name || user?.email || 'N/A'}`,
+      `Phone: ${order.customer?.phone || 'N/A'}`,
+      ...wrapPdfText(`Delivery: ${order.location || order.customer?.address || 'N/A'}`),
+      '',
+      'Items',
+      'Item | Variant | Qty | Price | Subtotal',
+      '------------------------------------------------------------',
+      ...(order.items || []).flatMap((item) => {
+        const unitPrice = Number(item.price || 0);
+        const subtotal = unitPrice * Number(item.quantity || 0);
+        const variant = [item.color, item.size].filter(Boolean).join(' / ') || '-';
+
+        return wrapPdfText(
+          `${item.product_name} | ${variant} | ${Number(item.quantity || 0)} | RWF ${unitPrice.toLocaleString()} | RWF ${subtotal.toLocaleString()}`,
+        );
+      }),
+      '',
+      `Items total: RWF ${itemTotal.toLocaleString()}`,
+      `Delivery fee: RWF ${Number(order.delivery_fee || 0).toLocaleString()}`,
+      `Total: RWF ${Number(order.total_amount || 0).toLocaleString()}`,
+    ];
+
+    const blob = buildPdfBlob(lines);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `shopcorner-order-${order.id}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const allOrderNotifications = buildOrderNotifications(orders);
+  const seenNotifications = user?.id ? readSeenNotifications(String(user.id)) : {};
+  const now = Date.now();
+  const orderNotifications = allOrderNotifications.filter((notification) => {
+    const seenAt = seenNotifications[notification.id];
+    if (!seenAt) return true;
+
+    const seenTime = new Date(seenAt).getTime();
+    if (Number.isNaN(seenTime)) {
+      return true;
+    }
+
+    return now - seenTime < NOTIFICATION_RETENTION_MS;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !user?.id || activeTab !== 'dash' || orderNotifications.length === 0) {
+      return;
+    }
+
+    const storedSeen = readSeenNotifications(String(user.id));
+    const nextSeen = { ...storedSeen };
+    const seenAt = new Date().toISOString();
+    let changed = false;
+
+    for (const notification of orderNotifications) {
+      if (!nextSeen[notification.id]) {
+        nextSeen[notification.id] = seenAt;
+        changed = true;
+      }
+    }
+
+    for (const [notificationId, timestamp] of Object.entries(nextSeen)) {
+      const timestampMs = new Date(timestamp).getTime();
+      if (Number.isNaN(timestampMs) || now - timestampMs >= NOTIFICATION_RETENTION_MS) {
+        delete nextSeen[notificationId];
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      writeSeenNotifications(String(user.id), nextSeen);
+    }
+  }, [activeTab, now, orderNotifications, user?.id]);
 
   if (loading) {
     return (
@@ -246,7 +550,14 @@ export default function ProfilePage() {
 
   const initial = (user.full_name?.charAt(0) || user.email?.charAt(0) || 'U').toUpperCase();
   const displayName = user.full_name || 'ShopCorner User';
-  const totalSpent = orders.reduce((sum, order) => sum + Number(order.total_amount || 0), 0);
+  const totalSpent = orders.reduce((sum, order) => {
+    const normalized = String(order.status || '').toLowerCase();
+    if (!['paid', 'processing', 'delivered'].includes(normalized)) {
+      return sum;
+    }
+
+    return sum + Number(order.total_amount || 0);
+  }, 0);
   const completedCount = orders.filter((o) => String(o.status).toLowerCase() === 'delivered').length;
 
   return (
@@ -283,6 +594,74 @@ export default function ProfilePage() {
             <div className="profile-stat-value">{completedCount}</div>
             <div className="profile-stat-label">Delivered</div>
           </div>
+          <div className="settings-container profile-stat-box">
+            <i className="fa-solid fa-bell"></i>
+            <div className="profile-stat-value">{orderNotifications.length}</div>
+            <div className="profile-stat-label">Notifications</div>
+          </div>
+        </div>
+
+        <div className="profile-followed-section">
+          <div className="profile-followed-head">
+            <h3>Notifications</h3>
+            <p>Order updates from your shop activity</p>
+          </div>
+
+          {orderNotifications.length === 0 ? (
+            <div className="profile-followed-empty">No notifications yet.</div>
+          ) : (
+            <div className="profile-notification-list">
+              {orderNotifications.map((notification) => (
+                <div key={notification.id} className="profile-notification-card">
+                  <div className="profile-notification-icon">
+                    <i className={notification.icon}></i>
+                  </div>
+                  <div className="profile-notification-copy">
+                    <strong>{notification.title}</strong>
+                    <p>{notification.body}</p>
+                    <small>{new Date(notification.time).toLocaleString()}</small>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="profile-followed-section">
+          <div className="profile-followed-head">
+            <h3>Followed sellers</h3>
+            <p>Stores you follow</p>
+          </div>
+
+          {followedSellers.length === 0 ? (
+            <div className="profile-followed-empty">No followed sellers yet.</div>
+          ) : (
+            <div className="profile-followed-list">
+              {followedSellers.map((seller) => {
+                const sellerLabel = seller.business_name || seller.full_name || 'Seller';
+                const sellerInitial = sellerLabel.charAt(0).toUpperCase();
+
+                return (
+                  <div key={seller.id} className="profile-followed-card">
+                    <div className="profile-followed-brand">
+                      <div className="profile-followed-logo">{sellerInitial}</div>
+                      <div>
+                        <strong>{sellerLabel}</strong>
+                        <small>{seller.full_name || 'ShopCorner seller'}</small>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="profile-followed-btn"
+                      onClick={() => handleUnfollowSeller(seller.id)}
+                    >
+                      Unfollow
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </section>
 
@@ -332,6 +711,13 @@ export default function ProfilePage() {
                     Cancel Order
                   </button>
                 )}
+                <button
+                  type="button"
+                  className="profile-print-btn"
+                  onClick={() => handleExportOrder(order)}
+                >
+                  Export PDF
+                </button>
               </article>
             ))}
           </div>

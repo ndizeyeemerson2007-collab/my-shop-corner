@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Image from 'next/image';
 import { useSearchParams } from 'next/navigation';
 import AuthStatusCard from '../../components/AuthStatusCard';
 import { useConfirm } from '../../components/ConfirmProvider';
@@ -12,9 +13,11 @@ type AdminStats = {
   active_users: number;
   suspended_users: number;
   total_sellers: number;
+  active_sellers?: number;
   pending_sellers: number;
   approved_sellers: number;
   total_buyers: number;
+  new_buyers?: number;
   total_products: number;
   total_orders: number;
   total_revenue: number;
@@ -53,6 +56,24 @@ type RevenuePoint = {
   revenue: number;
 };
 
+type AdminNotification = {
+  id: string;
+  tone: 'warning' | 'success' | 'neutral';
+  title: string;
+  detail: string;
+};
+
+type RecentOrder = {
+  id: number;
+  status?: string | null;
+  total_amount?: number | null;
+  delivery_fee?: number | null;
+  created_at?: string | null;
+  full_name?: string | null;
+  buyer_name?: string | null;
+  buyer_email?: string | null;
+};
+
 type AdminTab = 'overview' | 'sellers' | 'products' | 'users';
 
 type DashboardPayload = {
@@ -65,6 +86,8 @@ type DashboardPayload = {
   users: AdminUser[];
   suspended_users_list: AdminUser[];
   products: AdminProduct[];
+  low_stock_products: AdminProduct[];
+  recent_orders: RecentOrder[];
 };
 
 const emptyStats: AdminStats = {
@@ -72,9 +95,11 @@ const emptyStats: AdminStats = {
   active_users: 0,
   suspended_users: 0,
   total_sellers: 0,
+  active_sellers: 0,
   pending_sellers: 0,
   approved_sellers: 0,
   total_buyers: 0,
+  new_buyers: 0,
   total_products: 0,
   total_orders: 0,
   total_revenue: 0,
@@ -94,116 +119,260 @@ function getRoleLabel(user: AdminUser) {
   return 'Buyer';
 }
 
+function formatCurrency(value: number) {
+  return `RWF ${Number(value || 0).toLocaleString()}`;
+}
+
+function formatDate(value?: string | null) {
+  if (!value) return 'Recently';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Recently';
+
+  return parsed.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function getOrderStatusTone(status?: string | null) {
+  const value = String(status || 'pending').toLowerCase();
+  if (value === 'delivered' || value === 'paid') return 'active';
+  if (value === 'processing') return 'pending';
+  if (value === 'cancelled' || value === 'failed') return 'rejected';
+  return 'pending';
+}
+
 type OverviewViewProps = {
   stats: AdminStats;
   statusCounts: Record<string, number>;
   revenueChart: RevenuePoint[];
   maxRevenue: number;
+  notifications: AdminNotification[];
+  pendingSellers: AdminUser[];
+  lowStockProducts: AdminProduct[];
+  recentOrders: RecentOrder[];
+  lastUpdatedLabel: string;
+  refreshing: boolean;
+  onRefresh: () => Promise<void>;
 };
 
-function OverviewView({ stats, statusCounts, revenueChart, maxRevenue }: OverviewViewProps) {
+function OverviewView({
+  stats,
+  statusCounts,
+  revenueChart,
+  maxRevenue,
+  notifications,
+  pendingSellers,
+  lowStockProducts,
+  recentOrders,
+  lastUpdatedLabel,
+  refreshing,
+  onRefresh,
+}: OverviewViewProps) {
+  const activeUserRate = stats.total_users > 0 ? Math.round((stats.active_users / stats.total_users) * 100) : 0;
+  const sellerApprovalRate = stats.total_sellers > 0 ? Math.round((stats.approved_sellers / stats.total_sellers) * 100) : 0;
+  const deliveredRate = stats.total_orders > 0 ? Math.round(((statusCounts.delivered || 0) / stats.total_orders) * 100) : 0;
+
+  const highlightCards = [
+    { label: 'Revenue', value: formatCurrency(stats.total_revenue), meta: `${stats.total_orders} orders tracked` },
+    { label: 'Pending sellers', value: String(stats.pending_sellers), meta: `${stats.approved_sellers} already approved` },
+    { label: 'Active users', value: `${activeUserRate}%`, meta: `${stats.active_users} of ${stats.total_users}` },
+    { label: 'Seller approval', value: `${sellerApprovalRate}%`, meta: `${stats.active_sellers || 0} active shops` },
+  ];
+
+  const pipelineCards = [
+    { label: 'Pending orders', value: statusCounts.pending || 0 },
+    { label: 'Processing', value: statusCounts.processing || 0 },
+    { label: 'Delivered', value: statusCounts.delivered || 0 },
+    { label: 'New buyers', value: stats.new_buyers || 0 },
+  ];
+
   return (
     <div className="admin-mobile-view">
-      <section className="admin-central-hero">
-        <div>
-          <p className="admin-central-kicker">MyShop command room</p>
-          <h1>Admin dashboard for approvals, platform control, and user safety.</h1>
-          <p>
-            Review seller requests, monitor trade value, control product visibility, and suspend or reactivate accounts from one place.
-          </p>
+      <section className="admin-dashboard-hero">
+        <div className="admin-dashboard-hero-copy">
+          <p className="admin-central-kicker">Admin command center</p>
+          <h1>SHOP CORNER RWANDA CONTROL</h1>
+          
         </div>
-        <div className="admin-central-hero-stats">
-          <div className="admin-central-stat-pill">
-            <strong>{stats.pending_sellers}</strong>
-            <span>Pending sellers</span>
+
+        <div className="admin-dashboard-hero-side">
+          <div className="admin-dashboard-live-card">
+            <span>Last updated</span>
+            <strong>{lastUpdatedLabel}</strong>
+            <button
+              type="button"
+              className="admin-central-btn danger-outline"
+              onClick={() => void onRefresh()}
+              disabled={refreshing}
+            >
+              {refreshing ? 'Refreshing...' : 'Refresh data'}
+            </button>
           </div>
-          <div className="admin-central-stat-pill">
-            <strong>{stats.total_revenue.toLocaleString()}</strong>
-            <span>Platform GMV</span>
-          </div>
-          <div className="admin-central-stat-pill">
-            <strong>{stats.suspended_users}</strong>
-            <span>Suspended users</span>
+
+          <div className="admin-dashboard-live-card dark">
+            <span>Delivery completion</span>
+            <strong>{deliveredRate}%</strong>
+            <small>{statusCounts.delivered || 0} delivered orders</small>
           </div>
         </div>
       </section>
 
-      <section className="admin-mobile-section">
-        <div className="admin-mobile-section-head">
-          <div>
-            <h2>Overview</h2>
-            <p>Key platform health signals, order flow, and revenue movement in one full-screen mobile view.</p>
-          </div>
-        </div>
+      <section className="admin-dashboard-grid admin-dashboard-grid-top">
+        {highlightCards.map((card) => (
+          <article key={card.label} className="admin-kpi-card">
+            <span>{card.label}</span>
+            <strong>{card.value}</strong>
+            <small>{card.meta}</small>
+          </article>
+        ))}
+      </section>
 
-        <div className="admin-mobile-stat-grid">
-          <div className="admin-money-card">
-            <span>Total users</span>
-            <strong>{stats.total_users}</strong>
+      <section className="admin-dashboard-grid admin-dashboard-grid-main">
+        <article className="admin-dashboard-panel admin-dashboard-panel-wide">
+          <div className="admin-dashboard-panel-head">
+            <div>
+              <h2>Platform notifications</h2>
+              <p>Priority signals generated from live admin data.</p>
+            </div>
           </div>
-          <div className="admin-money-card">
-            <span>Active users</span>
-            <strong>{stats.active_users}</strong>
-          </div>
-          <div className="admin-money-card">
-            <span>Total sellers</span>
-            <strong>{stats.total_sellers}</strong>
-          </div>
-          <div className="admin-money-card">
-            <span>Total products</span>
-            <strong>{stats.total_products}</strong>
-          </div>
-          <div className="admin-money-card">
-            <span>Total orders</span>
-            <strong>{stats.total_orders}</strong>
-          </div>
-          <div className="admin-money-card">
-            <span>Total buyers</span>
-            <strong>{stats.total_buyers}</strong>
-          </div>
-        </div>
 
-        <div className="admin-money-hero">
-          <span>Total Platform GMV</span>
-          <strong>RWF {Number(stats.total_revenue || 0).toLocaleString()}</strong>
-          <small>
-            Products: RWF {Number(stats.product_sales || 0).toLocaleString()} | Delivery: RWF {Number(stats.delivery_fees || 0).toLocaleString()}
-          </small>
-        </div>
-
-        <div className="admin-money-grid">
-          <div className="admin-money-card">
-            <span>Pending</span>
-            <strong>{statusCounts.pending || 0}</strong>
-          </div>
-          <div className="admin-money-card">
-            <span>Paid</span>
-            <strong>{statusCounts.paid || 0}</strong>
-          </div>
-          <div className="admin-money-card">
-            <span>Processing</span>
-            <strong>{statusCounts.processing || 0}</strong>
-          </div>
-          <div className="admin-money-card">
-            <span>Delivered</span>
-            <strong>{statusCounts.delivered || 0}</strong>
-          </div>
-        </div>
-
-        <div className="admin-chart-card admin-mobile-chart-card">
-          <h3>Revenue Trend</h3>
-          <div className="admin-bar-chart">
-            {revenueChart.map((item) => (
-              <div key={item.key} className="admin-bar-column">
-                <div
-                  className="admin-bar-fill"
-                  style={{ height: `${Math.max(12, (item.revenue / maxRevenue) * 120)}px` }}
-                />
-                <span>{item.label}</span>
+          <div className="admin-notification-list">
+            {notifications.map((item) => (
+              <div key={item.id} className={`admin-notification-card ${item.tone}`}>
+                <strong>{item.title}</strong>
+                <span>{item.detail}</span>
               </div>
             ))}
           </div>
-        </div>
+        </article>
+
+        <article className="admin-dashboard-panel">
+          <div className="admin-dashboard-panel-head">
+            <div>
+              <h2>Order pipeline</h2>
+              <p>Current queue across the platform.</p>
+            </div>
+          </div>
+
+          <div className="admin-compact-grid">
+            {pipelineCards.map((card) => (
+              <div key={card.label} className="admin-money-card">
+                <span>{card.label}</span>
+                <strong>{card.value}</strong>
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="admin-dashboard-panel admin-dashboard-panel-wide">
+          <div className="admin-dashboard-panel-head">
+            <div>
+              <h2>Revenue trend</h2>
+              <p>Last 7 days of order value.</p>
+            </div>
+            <strong className="admin-panel-figure">{formatCurrency(stats.product_sales)}</strong>
+          </div>
+
+          <div className="admin-chart-card admin-chart-card-embedded">
+            <div className="admin-bar-chart">
+              {revenueChart.map((item) => (
+                <div key={item.key} className="admin-bar-column">
+                  <div
+                    className="admin-bar-fill"
+                    style={{ height: `${Math.max(14, (item.revenue / maxRevenue) * 170)}px` }}
+                    title={`${item.label}: ${formatCurrency(item.revenue)}`}
+                  />
+                  <small>{formatCurrency(item.revenue)}</small>
+                  <span>{item.label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </article>
+
+        <article className="admin-dashboard-panel">
+          <div className="admin-dashboard-panel-head">
+            <div>
+              <h2>Seller queue</h2>
+              <p>Newest applications waiting for review.</p>
+            </div>
+          </div>
+
+          <div className="admin-mini-list">
+            {pendingSellers.length === 0 ? (
+              <div className="admin-central-empty">No pending seller requests.</div>
+            ) : (
+              pendingSellers.slice(0, 4).map((seller) => (
+                <div key={seller.id} className="admin-mini-row">
+                  <div>
+                    <strong>{seller.business_name || getUserLabel(seller)}</strong>
+                    <small>{seller.email}</small>
+                  </div>
+                  <span className="admin-status-chip pending">Pending</span>
+                </div>
+              ))
+            )}
+          </div>
+        </article>
+
+        <article className="admin-dashboard-panel">
+          <div className="admin-dashboard-panel-head">
+            <div>
+              <h2>Low stock alerts</h2>
+              <p>Products that may need restocking soon.</p>
+            </div>
+          </div>
+
+          <div className="admin-mini-list">
+            {lowStockProducts.length === 0 ? (
+              <div className="admin-central-empty">No low-stock items in the recent catalog view.</div>
+            ) : (
+              lowStockProducts.map((product) => (
+                <div key={product.id} className="admin-mini-row">
+                  <div>
+                    <strong>{product.name}</strong>
+                    <small>{product.seller_business_name || product.seller_name || 'Unknown seller'}</small>
+                  </div>
+                  <span className="admin-status-chip pending">Stock {Number(product.stock || 0)}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </article>
+
+        <article className="admin-dashboard-panel admin-dashboard-panel-wide">
+          <div className="admin-dashboard-panel-head">
+            <div>
+              <h2>Recent orders</h2>
+              <p>Latest activity reaching the storefront.</p>
+            </div>
+          </div>
+
+          <div className="admin-order-feed">
+            {recentOrders.length === 0 ? (
+              <div className="admin-central-empty">No recent orders yet.</div>
+            ) : (
+              recentOrders.map((order) => (
+                <div key={order.id} className="admin-order-feed-row">
+                  <div>
+                    <strong>Order #{order.id}</strong>
+                    <p>{order.full_name || order.buyer_name || order.buyer_email || 'Unknown buyer'}</p>
+                  </div>
+                  <div>
+                    <strong>{formatCurrency(Number(order.total_amount || 0))}</strong>
+                    <p>{formatDate(order.created_at)}</p>
+                  </div>
+                  <span className={`admin-status-chip ${getOrderStatusTone(order.status)}`}>
+                    {String(order.status || 'pending')}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </article>
       </section>
     </div>
   );
@@ -226,14 +395,14 @@ function SellersView({
     <section className="admin-mobile-view admin-mobile-section">
       <div className="admin-mobile-section-head">
         <div>
-          <h2>Sellers</h2>
-          <p>Seller approval workflows and recently approved stores in a dedicated full-width moderation view.</p>
+          <h2>Seller approvals</h2>
+          <p>Review shop requests and track recent approvals.</p>
         </div>
       </div>
 
       <div className="admin-panel-section">
         <h3>New Seller Requests</h3>
-        <p>Approve sellers only after reviewing their details.</p>
+        <p>Approve or reject applications.</p>
       </div>
 
       <div className="admin-list-stack">
@@ -313,8 +482,8 @@ function ProductsView({
     <section className="admin-mobile-view admin-mobile-section">
       <div className="admin-mobile-section-head">
         <div>
-          <h2>Products</h2>
-          <p>Global product moderation with the original search filter and delete action kept intact.</p>
+          <h2>Catalog control</h2>
+          <p>Search products and remove anything that should not stay live.</p>
         </div>
       </div>
 
@@ -335,7 +504,12 @@ function ProductsView({
             <div key={product.id} className="admin-product-row-card admin-product-row-card-full">
               <div className="admin-product-row-main">
                 {resolveProductImagePath(product.image) ? (
-                  <img src={resolveProductImagePath(product.image)} alt={product.name} />
+                  <Image
+                    src={resolveProductImagePath(product.image)}
+                    alt={product.name}
+                    width={48}
+                    height={48}
+                  />
                 ) : (
                   <div className="admin-product-row-fallback" />
                 )}
@@ -346,7 +520,7 @@ function ProductsView({
                 </div>
               </div>
               <div className="admin-product-row-meta">
-                <span>RWF {Number(product.price || 0).toLocaleString()}</span>
+                <span>{formatCurrency(Number(product.price || 0))}</span>
                 <small>Stock {Number(product.stock || 0)}</small>
               </div>
               <button
@@ -386,8 +560,8 @@ function UsersView({
     <section className="admin-mobile-view admin-mobile-section">
       <div className="admin-mobile-section-head">
         <div>
-          <h2>Users</h2>
-          <p>Full-width user moderation with existing search, suspension, reactivation, and deactivation logic.</p>
+          <h2>User control</h2>
+          <p>Search accounts, suspend risky users, and reactivate them when needed.</p>
         </div>
       </div>
 
@@ -402,6 +576,7 @@ function UsersView({
 
       <div className="admin-panel-section">
         <h3>Manage Access</h3>
+        <p>Control account status from one list.</p>
       </div>
 
       <div className="admin-list-stack">
@@ -480,6 +655,7 @@ export default function AdminPage() {
   const confirm = useConfirm();
   const { loading, user, accessBlocked, message } = useProtectedAuth({ requiredRole: 'admin' });
   const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [actionLoadingId, setActionLoadingId] = useState('');
   const [stats, setStats] = useState<AdminStats>(emptyStats);
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
@@ -489,11 +665,18 @@ export default function AdminPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [suspendedUsers, setSuspendedUsers] = useState<AdminUser[]>([]);
   const [products, setProducts] = useState<AdminProduct[]>([]);
+  const [lowStockProducts, setLowStockProducts] = useState<AdminProduct[]>([]);
+  const [recentOrders, setRecentOrders] = useState<RecentOrder[]>([]);
   const [productSearch, setProductSearch] = useState('');
   const [userSearch, setUserSearch] = useState('');
+  const [lastUpdatedAt, setLastUpdatedAt] = useState('');
 
-  const loadDashboard = async () => {
-    setDashboardLoading(true);
+  const loadDashboard = async (isRefresh = false) => {
+    if (isRefresh) {
+      setRefreshing(true);
+    } else {
+      setDashboardLoading(true);
+    }
 
     try {
       const result = await safeFetch<DashboardPayload>('/api/admin/dashboard');
@@ -509,10 +692,14 @@ export default function AdminPage() {
       setUsers(result.users || []);
       setSuspendedUsers(result.suspended_users_list || []);
       setProducts(result.products || []);
+      setLowStockProducts(result.low_stock_products || []);
+      setRecentOrders(result.recent_orders || []);
+      setLastUpdatedAt(new Date().toISOString());
     } catch (error) {
       console.error('Admin dashboard error', error);
     } finally {
       setDashboardLoading(false);
+      setRefreshing(false);
     }
   };
 
@@ -553,7 +740,7 @@ export default function AdminPage() {
         return;
       }
 
-      await loadDashboard();
+      await loadDashboard(true);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : 'Action failed.');
     } finally {
@@ -584,7 +771,7 @@ export default function AdminPage() {
         return;
       }
 
-      await loadDashboard();
+      await loadDashboard(true);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : 'Could not remove product.');
     } finally {
@@ -614,6 +801,67 @@ export default function AdminPage() {
     );
   }, [userSearch, users]);
 
+  const notifications = useMemo<AdminNotification[]>(() => {
+    const items: AdminNotification[] = [];
+
+    if (stats.pending_sellers > 0) {
+      items.push({
+        id: 'pending-sellers',
+        tone: 'warning',
+        title: `${stats.pending_sellers} seller request${stats.pending_sellers > 1 ? 's' : ''} waiting`,
+        detail: 'Open the Sellers tab to approve new shops before they lose momentum.',
+      });
+    }
+
+    if (lowStockProducts.length > 0) {
+      items.push({
+        id: 'low-stock',
+        tone: 'warning',
+        title: `${lowStockProducts.length} low-stock product${lowStockProducts.length > 1 ? 's' : ''}`,
+        detail: 'Some items are almost sold out and may need restocking or visibility checks.',
+      });
+    }
+
+    if ((statusCounts.processing || 0) + (statusCounts.pending || 0) > 0) {
+      const queuedOrders = (statusCounts.processing || 0) + (statusCounts.pending || 0);
+      items.push({
+        id: 'order-queue',
+        tone: 'neutral',
+        title: `${queuedOrders} order${queuedOrders > 1 ? 's' : ''} in queue`,
+        detail: 'Track these orders closely so delivery and payment flow stay healthy.',
+      });
+    }
+
+    if (stats.new_buyers && stats.new_buyers > 0) {
+      items.push({
+        id: 'new-buyers',
+        tone: 'success',
+        title: `${stats.new_buyers} new buyer${stats.new_buyers > 1 ? 's' : ''} this week`,
+        detail: 'Customer growth is moving. Keep inventory and support ready for repeat orders.',
+      });
+    }
+
+    if (stats.suspended_users > 0) {
+      items.push({
+        id: 'suspended-users',
+        tone: 'neutral',
+        title: `${stats.suspended_users} account${stats.suspended_users > 1 ? 's' : ''} suspended`,
+        detail: 'Review account safety regularly to avoid blocking users longer than needed.',
+      });
+    }
+
+    if (items.length === 0) {
+      items.push({
+        id: 'steady-state',
+        tone: 'success',
+        title: 'Everything looks stable',
+        detail: 'No urgent seller, stock, or order alerts are coming from the current dashboard data.',
+      });
+    }
+
+    return items.slice(0, 5);
+  }, [lowStockProducts.length, stats.new_buyers, stats.pending_sellers, stats.suspended_users, statusCounts.pending, statusCounts.processing]);
+
   const activeTabParam = searchParams.get('tab');
   const activeTab: AdminTab =
     activeTabParam === 'sellers' || activeTabParam === 'products' || activeTabParam === 'users'
@@ -621,6 +869,7 @@ export default function AdminPage() {
       : 'overview';
 
   const maxRevenue = Math.max(1, ...revenueChart.map((item) => item.revenue || 0));
+  const lastUpdatedLabel = lastUpdatedAt ? formatDate(lastUpdatedAt) : 'Not yet updated';
 
   const renderActiveView = () => {
     switch (activeTab) {
@@ -631,6 +880,13 @@ export default function AdminPage() {
             statusCounts={statusCounts}
             revenueChart={revenueChart}
             maxRevenue={maxRevenue}
+            notifications={notifications}
+            pendingSellers={pendingSellers}
+            lowStockProducts={lowStockProducts}
+            recentOrders={recentOrders}
+            lastUpdatedLabel={lastUpdatedLabel}
+            refreshing={refreshing}
+            onRefresh={() => loadDashboard(true)}
           />
         );
       case 'sellers':

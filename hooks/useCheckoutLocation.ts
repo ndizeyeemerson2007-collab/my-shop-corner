@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { safeFetch } from '../services/api';
 
 export type CheckoutLocation = {
@@ -24,7 +24,7 @@ export function useCheckoutLocation() {
   const [locationError, setLocationError] = useState('');
   const [requestingLocation, setRequestingLocation] = useState(false);
 
-  const requestCurrentLocation = async () => {
+  const requestCurrentLocation = useCallback(async () => {
     if (typeof window === 'undefined' || !('geolocation' in navigator)) {
       const message = 'This device does not support live location sharing.';
       setLocationError(message);
@@ -87,7 +87,7 @@ export function useCheckoutLocation() {
     } finally {
       setRequestingLocation(false);
     }
-  };
+  }, []);
 
   return {
     currentLocation,

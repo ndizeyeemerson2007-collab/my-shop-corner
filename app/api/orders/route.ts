@@ -45,6 +45,7 @@ type DeliveryLocationInput = {
   label?: string;
   latitude?: number;
   longitude?: number;
+  manualText?: string;
 };
 
 type OrderUserRow = {
@@ -53,6 +54,56 @@ type OrderUserRow = {
   full_name?: string | null;
   phone?: string | null;
   address?: string | null;
+};
+
+type SellerStatusRow = {
+  order_id: number;
+  status?: string | null;
+};
+
+type OrderRow = {
+  id: number;
+  user_id?: string | null;
+  status?: string | null;
+  created_at?: string | null;
+  total_amount?: number | null;
+  delivery_fee?: number | null;
+  delivery_distance_km?: number | null;
+};
+
+type OrderItemRow = {
+  id?: number;
+  order_id: number;
+  product_name?: string | null;
+  product_id?: number | null;
+  quantity?: number | null;
+  color?: string | null;
+  size?: string | null;
+  price?: number | null;
+  products?: {
+    name?: string | null;
+    image?: string | null;
+    price?: number | null;
+    stock?: number | null;
+  } | null;
+};
+
+type HydratedOrderItem = OrderItemRow & {
+  product_image: string | null;
+};
+
+type CartRow = {
+  product_id: number;
+  quantity?: number | null;
+  color?: string | null;
+  size?: string | null;
+  products?: {
+    id?: number | null;
+    name?: string | null;
+    price?: number | null;
+    image?: string | null;
+    stock?: number | null;
+  } | null;
 };
 
 async function requireUser(request: NextRequest) {
@@ -83,17 +134,64 @@ async function requireUser(request: NextRequest) {
 
 function canUserCancelOrder(status: string | null | undefined) {
   const normalized = String(status || '').toLowerCase();
-  return normalized === 'pending' || normalized === 'paid';
+  return normalized === 'pending';
+}
+
+function normalizeOrderStatus(status?: string | null) {
+  const normalized = String(status || 'pending').toLowerCase();
+  return normalized === 'cancelled' ? 'canceled' : normalized;
+}
+
+function getEffectiveOrderStatus(baseStatus?: string | null, sellerStatuses?: Array<string | null | undefined>) {
+  const normalizedSellerStatuses = (sellerStatuses || [])
+    .map((status) => normalizeOrderStatus(status))
+    .filter(Boolean);
+
+  if (normalizedSellerStatuses.length === 0) {
+    return normalizeOrderStatus(baseStatus);
+  }
+
+  if (normalizedSellerStatuses.every((status) => status === 'delivered')) {
+    return 'delivered';
+  }
+
+  if (normalizedSellerStatuses.every((status) => status === 'canceled')) {
+    return 'canceled';
+  }
+
+  if (normalizedSellerStatuses.some((status) => status === 'pending')) {
+    return 'pending';
+  }
+
+  if (normalizedSellerStatuses.some((status) => status === 'paid')) {
+    return 'paid';
+  }
+
+  if (normalizedSellerStatuses.some((status) => status === 'processing')) {
+    return 'processing';
+  }
+
+  if (normalizedSellerStatuses.some((status) => status === 'delivered')) {
+    return 'processing';
+  }
+
+  if (normalizedSellerStatuses.some((status) => status === 'canceled')) {
+    return 'canceled';
+  }
+
+  return normalizeOrderStatus(baseStatus);
 }
 
 async function normalizeDeliveryLocation(input: DeliveryLocationInput | null | undefined, acceptLanguage?: string | null) {
   if (!input) return null;
 
+  const clientLabel = String(input.label || input.manualText || '').trim();
+
   const latitude = Number(input.latitude);
   const longitude = Number(input.longitude);
 
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-    return null;
+    return clientLabel || null;
   }
 
   const resolved = await reverseGeocodeLocation({
@@ -104,7 +202,6 @@ async function normalizeDeliveryLocation(input: DeliveryLocationInput | null | u
     longitude,
   });
 
-  const clientLabel = String(input.label || '').trim();
   if (clientLabel && !resolved.label) {
     return clientLabel;
   }
@@ -139,10 +236,12 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, message: normalizeDatabaseError(error.message) }, { status: 500 });
     }
 
-    const orderIds = (orders || []).map((o: any) => o.id);
-    const userIds = Array.from(new Set((orders || []).map((o: any) => String(o.user_id || '')).filter(Boolean)));
-    let itemsByOrder: Record<string, any[]> = {};
+    const typedOrders = (orders || []) as OrderRow[];
+    const orderIds = typedOrders.map((order) => order.id);
+    const userIds = Array.from(new Set(typedOrders.map((order) => String(order.user_id || '')).filter(Boolean)));
+    let itemsByOrder: Record<string, HydratedOrderItem[]> = {};
     let usersById: Record<string, OrderUserRow> = {};
+    let sellerStatusesByOrder: Record<string, string[]> = {};
 
     if (userIds.length > 0) {
       const { data: users, error: usersError } = await supabaseAdmin
@@ -161,6 +260,22 @@ export async function GET(request: NextRequest) {
     }
 
     if (orderIds.length > 0) {
+      const { data: sellerStatuses, error: sellerStatusesError } = await supabaseAdmin
+        .from('seller_order_statuses')
+        .select('order_id, status')
+        .in('order_id', orderIds);
+
+      if (sellerStatusesError) {
+        return NextResponse.json({ success: false, message: normalizeDatabaseError(sellerStatusesError.message) }, { status: 500 });
+      }
+
+      sellerStatusesByOrder = ((sellerStatuses || []) as SellerStatusRow[]).reduce<Record<string, string[]>>((acc, row) => {
+        const key = String(row.order_id);
+        if (!acc[key]) acc[key] = [];
+        acc[key].push(normalizeOrderStatus(row.status));
+        return acc;
+      }, {});
+
       const { data: items } = await supabaseAdmin
         .from('order_items')
         .select(`
@@ -169,7 +284,7 @@ export async function GET(request: NextRequest) {
         `)
         .in('order_id', orderIds);
 
-      itemsByOrder = (items || []).reduce((acc: Record<string, any[]>, item: any) => {
+      itemsByOrder = ((items || []) as OrderItemRow[]).reduce<Record<string, HydratedOrderItem[]>>((acc, item) => {
         const key = String(item.order_id);
         if (!acc[key]) acc[key] = [];
         acc[key].push({
@@ -181,15 +296,16 @@ export async function GET(request: NextRequest) {
       }, {});
     }
 
-    const hydratedOrders = (orders || []).map((order: any) => ({
+    const hydratedOrders = typedOrders.map((order) => ({
       ...order,
+      status: getEffectiveOrderStatus(order.status, sellerStatusesByOrder[String(order.id)] || []),
       customer: usersById[String(order.user_id)] || null,
       items: itemsByOrder[String(order.id)] || [],
     }));
 
     return NextResponse.json({ success: true, orders: hydratedOrders });
-  } catch (error: any) {
-    return NextResponse.json({ success: false, message: error.message || 'Internal Server Error' }, { status: 500 });
+  } catch (error: unknown) {
+    return NextResponse.json({ success: false, message: error instanceof Error ? error.message : 'Internal Server Error' }, { status: 500 });
   }
 }
 
@@ -201,8 +317,8 @@ export async function POST(request: NextRequest) {
     const deliveryLocation = await normalizeDeliveryLocation(body?.delivery_location, request.headers.get('accept-language'));
     const deliveryCoordinates = getDeliveryCoordinates(body?.delivery_location);
 
-    if (!deliveryLocation || !deliveryCoordinates) {
-      return NextResponse.json({ success: false, message: 'Live delivery location is required before placing an order.' }, { status: 400 });
+    if (!deliveryLocation) {
+      return NextResponse.json({ success: false, message: 'Delivery location is required before placing an order.' }, { status: 400 });
     }
 
     const sessionId = getSessionId(request);
@@ -216,17 +332,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, message: cartError.message }, { status: 500 });
     }
 
-    const cartItems = cartData || [];
+    const cartItems = (cartData || []) as CartRow[];
     if (cartItems.length === 0) {
       return NextResponse.json({ success: false, message: 'Cart is empty' }, { status: 400 });
     }
 
-    const productsTotal = cartItems.reduce((sum: number, item: any) => {
+    const productsTotal = cartItems.reduce((sum: number, item) => {
       const price = Number(item.products?.price || 0);
       return sum + price * Number(item.quantity || 1);
     }, 0);
-    const deliveryQuote = calculateDeliveryQuote(deliveryCoordinates.latitude, deliveryCoordinates.longitude);
-    const totalAmount = productsTotal + deliveryQuote.deliveryFee;
+    const deliveryQuote = deliveryCoordinates
+      ? calculateDeliveryQuote(deliveryCoordinates.latitude, deliveryCoordinates.longitude)
+      : { deliveryFee: 0, distanceKm: 0, ratePerKm: 0 };
+    const totalAmount = productsTotal + Number(deliveryQuote.deliveryFee || 0);
 
     const { data: newOrder, error: orderError } = await supabaseAdmin
       .from('orders')
@@ -248,7 +366,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, message: normalizeDatabaseError(orderError?.message) || 'Could not create order' }, { status: 500 });
     }
 
-    const orderItemsPayload = cartItems.map((item: any) => ({
+    const orderItemsPayload = cartItems.map((item) => ({
       order_id: newOrder.id,
       product_id: item.product_id,
       quantity: Number(item.quantity || 1),
@@ -283,8 +401,8 @@ export async function POST(request: NextRequest) {
       .eq('session_id', sessionId);
 
     return NextResponse.json({ success: true, order: newOrder });
-  } catch (error: any) {
-    return NextResponse.json({ success: false, message: normalizeDatabaseError(error.message) }, { status: 500 });
+  } catch (error: unknown) {
+    return NextResponse.json({ success: false, message: normalizeDatabaseError(error instanceof Error ? error.message : 'Internal Server Error') }, { status: 500 });
   }
 }
 
@@ -316,7 +434,21 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ success: false, message: 'Order not found' }, { status: 404 });
     }
 
-    if (!canUserCancelOrder(existingOrder.status)) {
+    const { data: sellerStatuses, error: sellerStatusesError } = await supabaseAdmin
+      .from('seller_order_statuses')
+      .select('order_id, status')
+      .eq('order_id', orderId);
+
+    if (sellerStatusesError) {
+      return NextResponse.json({ success: false, message: normalizeDatabaseError(sellerStatusesError.message) }, { status: 500 });
+    }
+
+    const effectiveStatus = getEffectiveOrderStatus(
+      existingOrder.status,
+      ((sellerStatuses || []) as SellerStatusRow[]).map((row) => row.status),
+    );
+
+    if (!canUserCancelOrder(effectiveStatus)) {
       return NextResponse.json({ success: false, message: 'This order can no longer be canceled' }, { status: 400 });
     }
 
@@ -333,7 +465,7 @@ export async function PATCH(request: NextRequest) {
     }
 
     return NextResponse.json({ success: true, order: updatedOrder });
-  } catch (error: any) {
-    return NextResponse.json({ success: false, message: normalizeDatabaseError(error.message) }, { status: 500 });
+  } catch (error: unknown) {
+    return NextResponse.json({ success: false, message: normalizeDatabaseError(error instanceof Error ? error.message : 'Internal Server Error') }, { status: 500 });
   }
 }

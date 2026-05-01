@@ -19,6 +19,21 @@ type SellerStats = {
   trend_products: number;
 };
 
+type RevenuePoint = {
+  key: string;
+  label: string;
+  revenue: number;
+};
+
+type SellerNotification = {
+  id: string;
+  icon: string;
+  title: string;
+  body: string;
+  time: string;
+  tone: 'success' | 'warning' | 'neutral';
+};
+
 type SellerOrderItem = {
   id: number;
   product_name: string;
@@ -66,8 +81,37 @@ const defaultProductForm = {
   original_price: '',
 };
 
+const NOTIFICATION_RETENTION_MS = 24 * 60 * 60 * 1000;
+
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
+}
+
+function formatCurrency(value: number) {
+  return `RWF ${Number(value || 0).toLocaleString()}`;
+}
+
+function getNotificationSeenKey(userId: string) {
+  return `shopcorner_seen_seller_notifications_${userId}`;
+}
+
+function readSeenNotifications(userId: string) {
+  if (typeof window === 'undefined') return {} as Record<string, string>;
+
+  try {
+    const raw = window.localStorage.getItem(getNotificationSeenKey(userId));
+    if (!raw) return {};
+
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeSeenNotifications(userId: string, value: Record<string, string>) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(getNotificationSeenKey(userId), JSON.stringify(value));
 }
 
 export default function SellerPage() {
@@ -76,6 +120,8 @@ export default function SellerPage() {
   const [user, setUser] = useState<User | null>(null);
   const [activeSection, setActiveSection] = useState<SellerSection | 'settings'>('stats');
   const [stats, setStats] = useState<SellerStats>({ revenue: 0, orders: 0, products: 0, trend_products: 0 });
+  const [revenueChart, setRevenueChart] = useState<RevenuePoint[]>([]);
+  const [notifications, setNotifications] = useState<SellerNotification[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<SellerOrder[]>([]);
   const [orderFilter, setOrderFilter] = useState<OrderFilter>('all');
@@ -117,7 +163,7 @@ export default function SellerPage() {
     void (async () => {
       try {
         const [statsResult, productsResult, ordersResult] = await Promise.all([
-          safeFetch<{ success: boolean; stats?: { revenue: number; orders: number; products: number; pending_orders: number } }>('/api/seller/dashboard'),
+          safeFetch<{ success: boolean; stats?: { revenue: number; orders: number; products: number; pending_orders: number }; revenue_chart?: RevenuePoint[]; notifications?: SellerNotification[] }>('/api/seller/dashboard'),
           safeFetch<{ success: boolean; products?: Product[] }>('/api/products?seller_scope=mine&limit=50'),
           safeFetch<{ success: boolean; orders?: SellerOrder[] }>('/api/seller/orders'),
         ]);
@@ -129,6 +175,8 @@ export default function SellerPage() {
             products: statsResult.stats.products,
             trend_products: statsResult.stats.pending_orders,
           });
+          setRevenueChart(statsResult.revenue_chart || []);
+          setNotifications(statsResult.notifications || []);
         }
 
         if (productsResult.success && productsResult.products) {
@@ -137,6 +185,8 @@ export default function SellerPage() {
 
         setOrders(ordersResult.success ? (ordersResult.orders || []) : []);
       } catch {
+        setNotifications([]);
+        setRevenueChart([]);
         setOrders([]);
       }
     })();
@@ -144,7 +194,7 @@ export default function SellerPage() {
 
   const loadDashboardStats = async () => {
     try {
-      const result = await safeFetch<{ success: boolean; stats?: { revenue: number; orders: number; products: number; pending_orders: number } }>('/api/seller/dashboard');
+      const result = await safeFetch<{ success: boolean; stats?: { revenue: number; orders: number; products: number; pending_orders: number }; revenue_chart?: RevenuePoint[]; notifications?: SellerNotification[] }>('/api/seller/dashboard');
       if (result.success && result.stats) {
         setStats({
           revenue: result.stats.revenue,
@@ -152,6 +202,8 @@ export default function SellerPage() {
           products: result.stats.products,
           trend_products: result.stats.pending_orders,
         });
+        setRevenueChart(result.revenue_chart || []);
+        setNotifications(result.notifications || []);
       }
     } catch {
       // keep defaults
@@ -435,29 +487,6 @@ export default function SellerPage() {
     }
   };
 
-  if (loading) {
-    return (
-      <AuthStatusCard
-        title="Loading seller control"
-        message="Checking your account before we open the dashboard."
-        loading
-      />
-    );
-  }
-
-  if (accessBlocked) {
-    return (
-      <AuthStatusCard
-        title="Access blocked"
-        message={message}
-      />
-    );
-  }
-
-  if (!user) {
-    return null;
-  }
-
   const sortedOrders = [...orders].sort((a, b) => {
     const priorityDiff = orderSortPriority(a.status) - orderSortPriority(b.status);
     if (priorityDiff !== 0) return priorityDiff;
@@ -522,6 +551,73 @@ export default function SellerPage() {
     canceled: 0,
     delivered: 0,
   });
+  const now = Date.now();
+  const seenNotifications = user?.id ? readSeenNotifications(String(user.id)) : {};
+  const visibleNotifications = notifications.filter((notification) => {
+    const seenAt = seenNotifications[notification.id];
+    if (!seenAt) return true;
+
+    const seenTime = new Date(seenAt).getTime();
+    if (Number.isNaN(seenTime)) {
+      return true;
+    }
+
+    return now - seenTime < NOTIFICATION_RETENTION_MS;
+  });
+  const maxRevenue = Math.max(1, ...revenueChart.map((item) => item.revenue || 0));
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !user?.id || activeSection !== 'stats' || visibleNotifications.length === 0) {
+      return;
+    }
+
+    const storedSeen = readSeenNotifications(String(user.id));
+    const nextSeen = { ...storedSeen };
+    const seenAt = new Date().toISOString();
+    let changed = false;
+
+    for (const notification of visibleNotifications) {
+      if (!nextSeen[notification.id]) {
+        nextSeen[notification.id] = seenAt;
+        changed = true;
+      }
+    }
+
+    for (const [notificationId, timestamp] of Object.entries(nextSeen)) {
+      const timestampMs = new Date(timestamp).getTime();
+      if (Number.isNaN(timestampMs) || now - timestampMs >= NOTIFICATION_RETENTION_MS) {
+        delete nextSeen[notificationId];
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      writeSeenNotifications(String(user.id), nextSeen);
+    }
+  }, [activeSection, now, user?.id, visibleNotifications]);
+
+  if (loading) {
+    return (
+      <AuthStatusCard
+        title="Loading seller control"
+        message="Checking your account before we open the dashboard."
+        loading
+      />
+    );
+  }
+
+  if (accessBlocked) {
+    return (
+      <AuthStatusCard
+        title="Access blocked"
+        message={message}
+      />
+    );
+  }
+
+  if (!user) {
+    return null;
+  }
 
   return (
     <main className="admin-page-shell">
@@ -543,6 +639,63 @@ export default function SellerPage() {
             <h2>{stats.trend_products || 0}</h2>
             <p>Pending Orders</p>
           </div>
+        </div>
+
+        <div className="seller-dashboard-grid">
+          <article className="admin-dashboard-panel seller-dashboard-chart-panel">
+            <div className="admin-dashboard-panel-head">
+              <div>
+                <h2>Notifications</h2>
+                <p>New follower, order, and payment updates from the last 24 hours.</p>
+              </div>
+              <strong className="admin-panel-figure">{visibleNotifications.length}</strong>
+            </div>
+
+            {visibleNotifications.length === 0 ? (
+              <div className="profile-followed-empty seller-notification-empty">No new notifications right now.</div>
+            ) : (
+              <div className="profile-notification-list">
+                {visibleNotifications.map((notification) => (
+                  <div key={notification.id} className={`profile-notification-card seller-notification-card ${notification.tone}`}>
+                    <div className="profile-notification-icon">
+                      <i className={notification.icon}></i>
+                    </div>
+                    <div className="profile-notification-copy">
+                      <strong>{notification.title}</strong>
+                      <p>{notification.body}</p>
+                      <small>{new Date(notification.time).toLocaleString()}</small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </article>
+
+          <article className="admin-dashboard-panel seller-dashboard-chart-panel">
+            <div className="admin-dashboard-panel-head">
+              <div>
+                <h2>Revenue trend</h2>
+                <p>Last 7 days of paid sales from your products.</p>
+              </div>
+              <strong className="admin-panel-figure">{formatCurrency(stats.revenue)}</strong>
+            </div>
+
+            <div className="admin-chart-card admin-chart-card-embedded">
+              <div className="admin-bar-chart">
+                {revenueChart.map((item) => (
+                  <div key={item.key} className="admin-bar-column">
+                    <div
+                      className="admin-bar-fill"
+                      style={{ height: `${Math.max(14, (item.revenue / maxRevenue) * 170)}px` }}
+                      title={`${item.label}: ${formatCurrency(item.revenue)}`}
+                    />
+                    <small>{formatCurrency(item.revenue)}</small>
+                    <span>{item.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </article>
         </div>
       </section>
 

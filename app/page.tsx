@@ -11,6 +11,7 @@ import { useCheckoutLocation } from "../hooks/useCheckoutLocation";
 import { BUSINESS_HQ, calculateDeliveryQuote } from "../lib/delivery";
 
 const PENDING_PRODUCT_KEY = 'shopcorner_pending_product';
+const TRACK_ORDER_CTA_KEY = 'shopcorner_show_track_order_cta';
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Something went wrong.';
@@ -21,6 +22,7 @@ export default function Home() {
   const router = useRouter();
   const [isMounted, setIsMounted] = useState(false);
   const [isCartOpen, setIsCartOpen] = useState(false);
+  const [showTrackOrderCta, setShowTrackOrderCta] = useState(false);
 
   // Auth
   const [user, setUser] = useState<User | null>(null);
@@ -31,6 +33,7 @@ export default function Home() {
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [cartCount, setCartCount] = useState(0);
   const [cartTotal, setCartTotal] = useState(0);
+  const [followedSellerIds, setFollowedSellerIds] = useState<string[]>([]);
 
   const [loadingProducts, setLoadingProducts] = useState(true);
   // Product Detail Modal State
@@ -39,6 +42,9 @@ export default function Home() {
   const [productReviews, setProductReviews] = useState<Review[]>([]);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [placingOrder, setPlacingOrder] = useState(false);
+  const [manualDeliveryLocation, setManualDeliveryLocation] = useState('');
+  const [showManualDeliveryInput, setShowManualDeliveryInput] = useState(false);
+  const [locationPanelOpen, setLocationPanelOpen] = useState(false);
   const [selectedColor, setSelectedColor] = useState('');
   const [selectedSize, setSelectedSize] = useState('');
   const [selectedQty, setSelectedQty] = useState('1');
@@ -54,6 +60,14 @@ export default function Home() {
   const deliveryQuote = currentLocation ? calculateDeliveryQuote(currentLocation.latitude, currentLocation.longitude) : null;
   const numericCartTotal = Number(cartTotal || 0);
   const orderGrandTotal = numericCartTotal + Number(deliveryQuote?.deliveryFee || 0);
+  const manualDeliveryLocationValue = manualDeliveryLocation.trim();
+  const sellerReviewCount = productReviews.length;
+  const sellerAverageRating = sellerReviewCount > 0
+    ? productReviews.reduce((sum, review) => sum + Number(review.rating || 0), 0) / sellerReviewCount
+    : 0;
+  const locationSummary = hasLocation
+    ? currentLocation?.label || 'Live location added'
+    : manualDeliveryLocationValue || 'Add location';
 
   // Slide state (moved up to avoid Rules of Hooks violation before early return)
   const [currentSlide, setCurrentSlide] = useState(0);
@@ -82,6 +96,50 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (!user) {
+      setFollowedSellerIds([]);
+      return;
+    }
+
+    const loadFollowedSellers = async () => {
+      try {
+        const result = await safeFetch<{ success: boolean; followed_seller_ids?: string[] }>('/api/follows');
+        if (result.success) {
+          setFollowedSellerIds(result.followed_seller_ids || []);
+        }
+      } catch {
+        setFollowedSellerIds([]);
+      }
+    };
+
+    void loadFollowedSellers();
+  }, [user]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!('geolocation' in navigator) || !('permissions' in navigator)) return;
+    if (currentLocation || requestingLocation) return;
+
+    let cancelled = false;
+
+    const preloadLocation = async () => {
+      try {
+        const permissionStatus = await navigator.permissions.query({ name: 'geolocation' });
+        if (cancelled || permissionStatus.state !== 'granted') return;
+        await requestCurrentLocation();
+      } catch {
+        // Ignore permission API failures and keep manual location flow available.
+      }
+    };
+
+    void preloadLocation();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentLocation, requestCurrentLocation, requestingLocation]);
+
+  useEffect(() => {
     if (!isMounted) return;
 
     const shouldOpenCartAfterLogin = localStorage.getItem('shopcorner_open_cart_after_login') === '1';
@@ -90,6 +148,13 @@ export default function Home() {
     setIsCartOpen(true);
     localStorage.removeItem('shopcorner_open_cart_after_login');
   }, [isMounted, user, cartItems.length]);
+
+  useEffect(() => {
+    if (!isMounted || typeof window === 'undefined') return;
+
+    const shouldShowTrackOrderCta = Boolean(user) && localStorage.getItem(TRACK_ORDER_CTA_KEY) === '1';
+    setShowTrackOrderCta(shouldShowTrackOrderCta);
+  }, [isMounted, user]);
 
   useEffect(() => {
     const handleOpenCart = () => {
@@ -251,6 +316,14 @@ export default function Home() {
     setIsCartOpen(true);
   };
 
+  const handleTrackOrderClick = () => {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(TRACK_ORDER_CTA_KEY);
+    }
+    setShowTrackOrderCta(false);
+    router.push('/profile?tab=orders');
+  };
+
   const openProductDetail = async (product: Product) => {
     setSelectedProduct(product);
     setDetailImageIndex(0);
@@ -304,6 +377,20 @@ export default function Home() {
     }
   };
 
+  const handleRequestDeliveryLocation = async () => {
+    const location = await requestCurrentLocation();
+
+    if (location) {
+      setShowManualDeliveryInput(false);
+      setLocationPanelOpen(false);
+      return location;
+    }
+
+    setShowManualDeliveryInput(true);
+    setLocationPanelOpen(true);
+    return null;
+  };
+
   const placeOrder = async () => {
     if (cartItems.length === 0) return;
 
@@ -323,16 +410,28 @@ export default function Home() {
       return;
     }
 
-    const deliveryLocation = currentLocation || await requestCurrentLocation();
+    const liveDeliveryLocation = currentLocation || await handleRequestDeliveryLocation();
+    const typedDeliveryLocation = manualDeliveryLocationValue
+      ? {
+          label: manualDeliveryLocationValue,
+          capturedAt: new Date().toISOString(),
+        }
+      : null;
+    const deliveryLocation = liveDeliveryLocation || typedDeliveryLocation;
+
     if (!deliveryLocation) {
-      window.alert('Please allow location access so we can save your live delivery location with this order.');
+      window.alert('Share your live location, or type the actual place where you want the order delivered.');
       return;
     }
 
-    const confirmedQuote = calculateDeliveryQuote(deliveryLocation.latitude, deliveryLocation.longitude);
+    const confirmedQuote = liveDeliveryLocation
+      ? calculateDeliveryQuote(liveDeliveryLocation.latitude, liveDeliveryLocation.longitude)
+      : null;
     const confirmed = await confirm({
       title: 'Place Order',
-      message: `Are you sure you want to place this order?\n\nDelivery location:\n${deliveryLocation.label}\n\nDistance from ${BUSINESS_HQ.district}: ${confirmedQuote.distanceKm.toFixed(2)} km\nDelivery fee: RWF ${confirmedQuote.deliveryFee.toLocaleString()}`,
+      message: liveDeliveryLocation
+        ? `Are you sure you want to place this order?\n\nDelivery location:\n${deliveryLocation.label}\n\nDistance from ${BUSINESS_HQ.district}: ${confirmedQuote?.distanceKm.toFixed(2)} km\nDelivery fee: RWF ${confirmedQuote?.deliveryFee.toLocaleString()}`
+        : `Are you sure you want to place this order?\n\nDelivery location:\n${deliveryLocation.label}\n\nLive GPS was unavailable, so your typed delivery location will be sent to the shop for manual delivery follow-up.`,
       confirmText: 'Place',
       cancelText: 'Cancel',
       iconClass: 'fa-solid fa-receipt',
@@ -350,7 +449,14 @@ export default function Home() {
         return;
       }
       await loadCartData();
+      setManualDeliveryLocation('');
+      setShowManualDeliveryInput(false);
+      setLocationPanelOpen(false);
       setIsCartOpen(false);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(TRACK_ORDER_CTA_KEY, '1');
+      }
+      setShowTrackOrderCta(true);
       await confirm({
         title: 'Order Placed',
         message: 'Your order was placed successfully. You can track or manage it from your profile.',
@@ -386,6 +492,48 @@ export default function Home() {
       }
     } catch (err) {
       console.error("Failed to submit review", err);
+    }
+  };
+
+  const handleToggleFollowSeller = async (sellerId?: string | null) => {
+    const normalizedSellerId = String(sellerId || '').trim();
+    if (!normalizedSellerId) return;
+
+    if (!user) {
+      const shouldLogin = await confirm({
+        title: 'Login Required',
+        message: 'Login to follow this seller?',
+        confirmText: 'Login',
+        cancelText: 'No',
+        iconClass: 'fa-solid fa-user-lock',
+      });
+
+      if (shouldLogin) {
+        router.push('/login');
+      }
+      return;
+    }
+
+    const isFollowing = followedSellerIds.includes(normalizedSellerId);
+
+    try {
+      const result = await safeFetch<{ success: boolean; message?: string }>('/api/follows', {
+        method: isFollowing ? 'DELETE' : 'POST',
+        body: JSON.stringify({ seller_id: normalizedSellerId }),
+      });
+
+      if (!result.success) {
+        window.alert(result.message || 'Could not update seller follow.');
+        return;
+      }
+
+      setFollowedSellerIds((current) =>
+        isFollowing
+          ? current.filter((id) => id !== normalizedSellerId)
+          : [...current, normalizedSellerId],
+      );
+    } catch (error: unknown) {
+      window.alert(getErrorMessage(error));
     }
   };
 
@@ -592,6 +740,17 @@ export default function Home() {
         )}
       </main>
 
+      {showTrackOrderCta ? (
+        <button
+          type="button"
+          className="track-order-cta"
+          onClick={handleTrackOrderClick}
+        >
+          <i className="fa-solid fa-truck-fast" aria-hidden="true"></i>
+          <span>Track your order</span>
+        </button>
+      ) : null}
+
       {isCartOpen && (
         <div id="cart-modal" className="cart-modal" style={{ display: 'flex' }}>
           <div className="cart-modal-content">
@@ -626,32 +785,67 @@ export default function Home() {
             </div>
             <div className="cart-modal-footer">
               <div className="checkout-location-card">
-                <div className="checkout-location-row">
-                  <div>
-                    <p className="checkout-location-label">Delivery location</p>
-                    <p className="checkout-location-meta">
-                      {hasLocation
-                        ? currentLocation?.label
-                        : 'Required for shipping. Share your live location so the order uses your real delivery point.'}
-                    </p>
-                    {!hasLocation && locationError ? (
-                      <p className="checkout-location-error">{locationError}</p>
-                    ) : null}
-                    {deliveryQuote ? (
-                      <p className="checkout-location-fee">
-                        {deliveryQuote.distanceKm.toFixed(2)} km from {BUSINESS_HQ.district} | Delivery fee RWF {deliveryQuote.deliveryFee.toLocaleString()}
-                      </p>
-                    ) : null}
+                <div className="checkout-location-summary">
+                  <div className="checkout-location-summary-copy">
+                    <p className="checkout-location-label">Location</p>
+                    <p className="checkout-location-summary-text">{locationSummary}</p>
                   </div>
                   <button
                     type="button"
-                    className="checkout-location-action"
-                    onClick={() => void requestCurrentLocation()}
-                    disabled={requestingLocation || placingOrder}
+                    className="checkout-location-toggle"
+                    onClick={() => setLocationPanelOpen((current) => !current)}
+                    aria-expanded={locationPanelOpen}
+                    aria-label={locationPanelOpen ? 'Collapse location section' : 'Expand location section'}
                   >
-                    {requestingLocation ? 'Checking...' : hasLocation ? 'Refresh' : 'Use My Live Location'}
+                    {locationPanelOpen ? '˄' : '˅'}
                   </button>
                 </div>
+                {locationPanelOpen ? (
+                  <div className="checkout-location-row">
+                    <div>
+                      <p className="checkout-location-meta">
+                        {hasLocation
+                          ? currentLocation?.label
+                          : 'Use live or type.'}
+                      </p>
+                      {!hasLocation && locationError ? (
+                        <p className="checkout-location-error">{locationError}</p>
+                      ) : null}
+                      {showManualDeliveryInput ? (
+                        <div className="checkout-manual-location-box">
+                          <label htmlFor="manual-delivery-location" className="checkout-location-label">
+                            Address
+                          </label>
+                          <textarea
+                            id="manual-delivery-location"
+                            className="checkout-manual-location-input"
+                            value={manualDeliveryLocation}
+                            onChange={(event) => setManualDeliveryLocation(event.target.value)}
+                            placeholder="Area, road, landmark"
+                            rows={3}
+                            disabled={placingOrder}
+                          />
+                          <p className="checkout-location-hint">Type it if GPS fails.</p>
+                        </div>
+                      ) : null}
+                      {deliveryQuote ? (
+                        <p className="checkout-location-fee">
+                          {deliveryQuote.distanceKm.toFixed(2)} km | RWF {deliveryQuote.deliveryFee.toLocaleString()}
+                        </p>
+                      ) : showManualDeliveryInput && manualDeliveryLocationValue ? (
+                        <p className="checkout-location-fee">Fee set later.</p>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      className="checkout-location-action"
+                      onClick={() => void handleRequestDeliveryLocation()}
+                      disabled={requestingLocation || placingOrder}
+                    >
+                      {requestingLocation ? 'Checking...' : hasLocation ? 'Refresh live' : 'Use live'}
+                    </button>
+                  </div>
+                ) : null}
               </div>
               {deliveryQuote ? (
                 <div className="cart-total-display checkout-total-breakdown">
@@ -770,12 +964,58 @@ export default function Home() {
                     <span className="detail-price">RWF{Number(selectedProduct.price).toFixed(2)}</span>
                     {selectedProduct.original_price && <span className="detail-original-price">RWF{Number(selectedProduct.original_price).toFixed(2)}</span>}
                   </div>
-                  <p className="detail-description">{selectedProduct.description || "No description available for this product."}</p>
+                  <div className="detail-description-block">
+                    <h3 className="detail-description-title">Description</h3>
+                    <p className="detail-description">{selectedProduct.description || "No description available for this product."}</p>
+                  </div>
                   <div className="detail-meta">
                     {selectedProduct.category && <span>Category: {selectedProduct.category}</span>}
                     {selectedProduct.seller_business_name && <span>Seller: {selectedProduct.seller_business_name}</span>}
                     <span>Sold: {selectedProduct.sold || 0}+</span>
                   </div>
+
+                  {selectedProduct.seller_id ? (
+                    <div className="detail-seller-card">
+                      <div className="detail-seller-header">Seller Highlight</div>
+                      <div className="detail-seller-main">
+                        <div className="detail-seller-logo">
+                          {(selectedProduct.seller_business_name || selectedProduct.seller_name || 'S').charAt(0).toUpperCase()}
+                        </div>
+                        <div className="detail-seller-copy">
+                          <strong>{selectedProduct.seller_business_name || selectedProduct.seller_name || 'Seller'}</strong>
+                          <div className="detail-seller-rating">
+                            <i className="fa-solid fa-star" aria-hidden="true" />
+                            {sellerReviewCount > 0 ? (
+                              <>
+                                <span>{sellerAverageRating.toFixed(1)}</span>
+                                <small>({sellerReviewCount.toLocaleString()} Reviews)</small>
+                              </>
+                            ) : (
+                              <small>No reviews yet</small>
+                            )}
+                          </div>
+                          <div className="detail-seller-actions">
+                            <button
+                              type="button"
+                              className={`detail-follow-pill ${followedSellerIds.includes(String(selectedProduct.seller_id)) ? 'active' : ''}`}
+                              onClick={() => void handleToggleFollowSeller(selectedProduct.seller_id)}
+                              aria-label={followedSellerIds.includes(String(selectedProduct.seller_id)) ? 'Unfollow seller' : 'Follow seller'}
+                            >
+                              <span className="detail-follow-label">
+                                {followedSellerIds.includes(String(selectedProduct.seller_id)) ? 'Following' : 'Follow'}
+                              </span>
+                              <span className="detail-follow-icon" aria-hidden="true">
+                                <i className={`fa-solid ${followedSellerIds.includes(String(selectedProduct.seller_id)) ? 'fa-check' : 'fa-user-group'}`} />
+                              </span>
+                            </button>
+                            <div className="detail-seller-badge">
+                              <i className="fa-solid fa-circle-check" aria-hidden="true" />
+                              <span>Verified Seller</span>                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
 
                   {parseOptionList(selectedProduct.colors).length > 0 && (
                     <div className="option-group">
