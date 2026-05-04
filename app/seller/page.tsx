@@ -345,7 +345,7 @@ export default function SellerPage() {
       }
 
       const existingImages = getProductImages(editingProduct);
-      const finalImages = uploadedPaths.length > 0 ? uploadedPaths : existingImages;
+      const finalImages = [...existingImages, ...uploadedPaths];
 
       const payload = {
         ...(editingProduct ? { id: editingProduct.id } : {}),
@@ -392,6 +392,18 @@ export default function SellerPage() {
 
   const handleRemoveImageFile = (index: number) => {
     setImageFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleRemoveExistingImage = (index: number) => {
+    if (!editingProduct) return;
+    const currentImages = getProductImages(editingProduct);
+    const updatedImages = currentImages.filter((_, i) => i !== index);
+    
+    setEditingProduct({
+      ...editingProduct,
+      image: updatedImages[0] || '',
+      images: updatedImages
+    });
   };
 
   const handleEditProduct = (product: Product) => {
@@ -789,16 +801,19 @@ export default function SellerPage() {
               : 'Choose one or many images from the device. The first image becomes the main image.'}
           </p>
           {editingProduct && getProductImages(editingProduct).length > 0 ? (
-            <div className="admin-upload-list">
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '15px', marginBottom: '15px' }}>
               {getProductImages(editingProduct).map((imagePath, index) => (
-                <div key={`${imagePath}-${index}`} className="admin-upload-item">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <div style={{ width: '40px', height: '40px', position: 'relative', borderRadius: '4px', overflow: 'hidden' }}>
-                      <Image src={resolveProductImagePath(imagePath)} alt="Product image" fill style={{ objectFit: 'cover' }} unoptimized />
-                    </div>
-                    <span>Current image {index + 1}</span>
-                  </div>
-                  {index === 0 ? <strong>Main image</strong> : <small>Gallery image</small>}
+                <div key={`${imagePath}-${index}`} style={{ position: 'relative', width: '80px', height: '80px', border: '1px solid #ddd', borderRadius: '6px', overflow: 'hidden' }}>
+                  <img src={resolveProductImagePath(imagePath)} alt="Current product" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <button 
+                    type="button" 
+                    onClick={() => handleRemoveExistingImage(index)}
+                    title="Remove image"
+                    style={{ position: 'absolute', top: 0, right: 0, background: 'rgba(255, 0, 0, 0.8)', color: 'white', border: 'none', borderBottomLeftRadius: '4px', cursor: 'pointer', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 'bold' }}
+                  >
+                    ×
+                  </button>
+                  {index === 0 && <span style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(0,0,0,0.6)', color: 'white', fontSize: '10px', textAlign: 'center', padding: '2px 0' }}>Main</span>}
                 </div>
               ))}
             </div>
