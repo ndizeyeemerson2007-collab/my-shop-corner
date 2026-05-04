@@ -98,10 +98,11 @@ export async function POST(
 
     if (!data) {
       // Check if record exists and update it instead
+      const userId = auth.account.id;
       const { data: existingVote, error: checkError } = await supabaseAdmin
         .from('product_votes')
         .select('id')
-        .eq('user_id', auth.id)
+        .eq('user_id', userId)
         .eq('product_id', productId)
         .single();
 
@@ -110,7 +111,7 @@ export async function POST(
         const { error: updateError } = await supabaseAdmin
           .from('product_votes')
           .update({ vote })
-          .eq('user_id', auth.id)
+          .eq('user_id', userId)
           .eq('product_id', productId);
 
         if (updateError) {
