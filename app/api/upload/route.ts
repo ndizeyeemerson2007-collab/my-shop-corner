@@ -14,9 +14,6 @@ export async function POST(request: NextRequest) {
   try {
     const auth = await getAuthenticatedAccount(request);
     if (!auth.ok) return auth.response;
-    if (!hasRole(auth.profile, ['seller'])) {
-      return forbiddenResponse();
-    }
 
     const formData = await request.formData();
     const files = formData.getAll('files').filter((entry): entry is File => entry instanceof File);
@@ -39,10 +36,11 @@ export async function POST(request: NextRequest) {
       const extension = file.name ? file.name.split('.').pop()?.toLowerCase() || 'jpg' : 'jpg';
       const finalFileName = `${crypto.randomUUID()}.${extension}`;
       const fileBuffer = await file.arrayBuffer();
+      const uploadPath = `profiles/${auth.profile.id}/${finalFileName}`;
 
       const { data, error } = await supabaseAdmin.storage
         .from('products')
-        .upload(finalFileName, fileBuffer, {
+        .upload(uploadPath, fileBuffer, {
           contentType: file.type,
           upsert: true,
         });

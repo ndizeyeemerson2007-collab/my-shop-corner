@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { handleLogoutLocal, safeFetch } from '../../services/api';
+import { handleLogoutLocal, safeFetch, resolveProductImagePath } from '../../services/api';
 import { User } from '../../types';
 import { useConfirm } from '../../components/ConfirmProvider';
 import LoadingDots from '../../components/LoadingDots';
@@ -48,6 +48,10 @@ type OrderNotification = {
   time: string;
   kind: 'placed' | 'paid';
 };
+
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
 
 type SettingsPanel = 'overview' | 'profile' | 'password';
 
@@ -219,13 +223,17 @@ export default function ProfilePage() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [orders, setOrders] = useState<UserOrder[]>([]);
   const [followedSellers, setFollowedSellers] = useState<FollowedSeller[]>([]);
-  const [profileForm, setProfileForm] = useState({ full_name: '', phone: '', address: '' });
-  const [profileOriginal, setProfileOriginal] = useState({ full_name: '', phone: '', address: '' });
+  const [profileForm, setProfileForm] = useState({ full_name: '', phone: '', address: '', profile_pic: '' });
+  const [profileOriginal, setProfileOriginal] = useState({ full_name: '', phone: '', address: '', profile_pic: '' });
+  const [profilePicFile, setProfilePicFile] = useState<File | null>(null);
+  const [profilePicPreview, setProfilePicPreview] = useState('');
   const [passwordForm, setPasswordForm] = useState({
     current_password: '',
     new_password: '',
     confirm_password: '',
   });
+  const [showAvatarMenu, setShowAvatarMenu] = useState(false);
+  const profilePicInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!protectedUser || accessBlocked) {
@@ -237,11 +245,14 @@ export default function ProfilePage() {
       full_name: protectedUser.full_name || '',
       phone: protectedUser.phone || '',
       address: protectedUser.address || '',
+      profile_pic: protectedUser.profile_pic || '',
     };
 
     setUser(protectedUser);
     setProfileForm(mapped);
     setProfileOriginal(mapped);
+    setProfilePicPreview(protectedUser.profile_pic || '');
+    setProfilePicFile(null);
     loadOrders();
     loadFollowedSellers();
   }, [accessBlocked, protectedUser]);
@@ -332,12 +343,28 @@ export default function ProfilePage() {
   const hasProfileChanges =
     profileForm.full_name !== profileOriginal.full_name ||
     profileForm.phone !== profileOriginal.phone ||
-    profileForm.address !== profileOriginal.address;
+    profileForm.address !== profileOriginal.address ||
+    profileForm.profile_pic !== profileOriginal.profile_pic ||
+    Boolean(profilePicFile);
 
   const handleDiscardProfile = () => {
     if (!hasProfileChanges) return;
     if (!window.confirm('Discard unsaved changes?')) return;
     setProfileForm(profileOriginal);
+    setProfilePicPreview(profileOriginal.profile_pic || '');
+    setProfilePicFile(null);
+  };
+
+  const handleProfilePicChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      window.alert('Please select a valid image file.');
+      return;
+    }
+
+    setProfilePicFile(file);
+    setProfilePicPreview(URL.createObjectURL(file));
   };
 
   const handleSaveProfile = async (e: React.FormEvent) => {
@@ -346,9 +373,35 @@ export default function ProfilePage() {
 
     setSavingProfile(true);
     try {
+      let profilePicUrl = profileForm.profile_pic;
+
+      if (profilePicFile) {
+        const uploadData = new FormData();
+        uploadData.append('files', profilePicFile);
+
+        const uploadResult = await safeFetch<{ success: boolean; paths?: string[]; message?: string }>('/api/upload', {
+          method: 'POST',
+          body: uploadData,
+        });
+
+        if (!uploadResult.success || !Array.isArray(uploadResult.paths) || uploadResult.paths.length === 0) {
+          window.alert(uploadResult.message || 'Could not upload profile picture.');
+          return;
+        }
+
+        profilePicUrl = uploadResult.paths[0];
+      }
+
+      const payload = {
+        full_name: profileForm.full_name,
+        phone: profileForm.phone,
+        address: profileForm.address,
+        profile_pic: profilePicUrl,
+      };
+
       const result = await safeFetch<{ success: boolean; user?: User; message?: string }>('/api/profile', {
         method: 'PATCH',
-        body: JSON.stringify(profileForm),
+        body: JSON.stringify(payload),
       });
 
       if (result.success && result.user) {
@@ -357,9 +410,12 @@ export default function ProfilePage() {
           full_name: result.user.full_name || '',
           phone: result.user.phone || '',
           address: result.user.address || '',
+          profile_pic: result.user.profile_pic || '',
         };
         setProfileForm(next);
         setProfileOriginal(next);
+        setProfilePicPreview(result.user.profile_pic || '');
+        setProfilePicFile(null);
         localStorage.setItem('shopcorner_user', JSON.stringify(result.user));
         window.dispatchEvent(new CustomEvent('userLogin'));
         window.alert('Profile updated successfully.');
@@ -563,7 +619,50 @@ export default function ProfilePage() {
   return (
     <main className="profile-page-shell">
       <section className="profile-header-card">
-        <div className="profile-avatar-circle">{initial}</div>
+        <div className="profile-avatar-circle">
+          {profilePicPreview ? (
+            <img src={profilePicPreview} alt="Profile" />
+          ) : user.profile_pic ? (
+            <img src={resolveProductImagePath(user.profile_pic)} alt="Profile" />
+          ) : (
+            initial
+          )}
+        </div>
+        {(profilePicPreview || user.profile_pic) && (
+          <div className="avatar-edit-container">
+            <button className="avatar-edit-btn-small" onClick={() => setShowAvatarMenu(!showAvatarMenu)}>
+              <i className="fa-solid fa-pen"></i>
+            </button>
+            {showAvatarMenu && (
+              <div className="avatar-menu">
+                <button onClick={() => { profilePicInputRef.current?.click(); setShowAvatarMenu(false); }}>Change Picture</button>
+                <button onClick={async () => {
+                  setShowAvatarMenu(false);
+                  setProfilePicPreview('');
+                  setProfilePicFile(null);
+                  setProfileForm(prev => ({ ...prev, profile_pic: '' }));
+                  try {
+                    const result = await safeFetch<{ success: boolean; user?: User; message?: string }>('/api/profile', {
+                      method: 'PATCH',
+                      body: JSON.stringify({ profile_pic: '' }),
+                    });
+                    if (result.success && result.user) {
+                      setUser(result.user);
+                      setProfileForm(prev => ({ ...prev, profile_pic: '' }));
+                      setProfileOriginal(prev => ({ ...prev, profile_pic: '' }));
+                      localStorage.setItem('shopcorner_user', JSON.stringify(result.user));
+                      window.dispatchEvent(new CustomEvent('userLogin'));
+                    } else {
+                      window.alert(result.message || 'Failed to remove profile picture.');
+                    }
+                  } catch (error: unknown) {
+                    window.alert(getErrorMessage(error, 'Could not remove profile picture.'));
+                  }
+                }}>Remove Picture</button>
+              </div>
+            )}
+          </div>
+        )}
         <h2>{displayName}</h2>
         <p>{user.email}</p>
       </section>
@@ -805,6 +904,15 @@ export default function ProfilePage() {
 
               <label className="adm-label">Email</label>
               <input type="email" className="adm-input" value={user.email} readOnly />
+
+              <label className="adm-label">Profile Picture</label>
+              <input
+                type="file"
+                accept="image/*"
+                className="adm-input profile-pic-input"
+                onChange={handleProfilePicChange}
+                ref={profilePicInputRef}
+              />
 
               <label className="adm-label">Phone</label>
               <input

@@ -572,6 +572,26 @@
     margin-top: 2px;
 }
 
+.product-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 10px;
+}
+
+.product-views {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: #888;
+    white-space: nowrap;
+}
+
+.product-views i {
+    font-size: 12px;
+}
+
 /* Loading & Error States */
 .loading, .error, .no-products {
     grid-column: 1 / -1;
@@ -1441,6 +1461,13 @@
     justify-content: center;
     font-weight: 700;
     font-size: 18px;
+    overflow: hidden;
+}
+
+.side-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
 }
 
 .user-name {
@@ -2832,6 +2859,15 @@ body { background: #f8fafc; }
     box-shadow: 0 4px 12px rgba(249, 115, 22, 0.28);
 }
 
+.profile-avatar-circle img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+    border: 3px solid #fff;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
 .profile-header-card h2 {
     margin: 0;
     font-size: 22px;
@@ -3230,6 +3266,55 @@ body { background: #f8fafc; }
     font-size: 28px;
     font-weight: 500;
     flex-shrink: 0;
+    overflow: hidden;
+}
+
+.detail-seller-logo img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+}
+
+.detail-votes {
+    display: flex;
+    gap: 10px;
+    margin-top: 15px;
+}
+
+.vote-btn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 20px;
+    background: #fff;
+    color: #666;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-size: 14px;
+}
+
+.vote-btn:hover {
+    border-color: var(--accent-orange);
+    color: var(--accent-orange);
+}
+
+.vote-btn:active {
+    transform: scale(0.95);
+}
+
+.vote-up.active {
+    background: #e8f5e8;
+    border-color: #4caf50;
+    color: #4caf50;
+}
+
+.vote-down.active {
+    background: #ffeaea;
+    border-color: #f44336;
+    color: #f44336;
 }
 
 .detail-seller-copy {
@@ -4083,9 +4168,8 @@ body { background: #f8fafc; }
     transform: translateX(-50%);
     width: 96px;
     height: 64px;
-    background: #f4f7f6;
+    background: transparent;
     border-radius: 0 0 56px 56px;
-    box-shadow: 0 0 0 8px #f4f7f6;
     z-index: 0;
 }
 
@@ -4245,6 +4329,16 @@ body { background: #f8fafc; }
     color: #1f2937;
     font-size: 28px;
     font-weight: 800;
+    overflow: hidden;
+}
+
+.settings-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 24px;
+    border: 3px solid #fff;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
 .avatar-edit-btn {
@@ -4262,6 +4356,111 @@ body { background: #f8fafc; }
     justify-content: center;
     box-shadow: 0 8px 20px rgba(15, 23, 42, 0.14);
     cursor: pointer;
+}
+
+.avatar-edit-container {
+    position: relative;
+    margin-top: 10px;
+    display: flex;
+    justify-content: center;
+}
+
+.avatar-edit-btn-small {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: none;
+    background: var(--accent-orange);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 12px rgba(249, 115, 22, 0.28);
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s ease;
+}
+
+.avatar-edit-btn-small:hover {
+    background: var(--accent-orange-deep);
+    transform: scale(1.05);
+    box-shadow: 0 6px 16px rgba(249, 115, 22, 0.4);
+}
+
+.avatar-edit-btn-small:active {
+    transform: scale(0.95);
+}
+
+.avatar-edit-btn-small:hover {
+    background: var(--accent-orange-deep);
+}
+
+.avatar-menu {
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+    z-index: 10;
+    min-width: 120px;
+    overflow: hidden;
+}
+
+.avatar-menu button {
+    display: block;
+    width: 100%;
+    padding: 10px 12px;
+    border: none;
+    background: none;
+    text-align: left;
+    cursor: pointer;
+    font-size: 14px;
+    color: #333;
+    transition: background 0.2s ease;
+}
+
+.avatar-menu button:hover {
+    background: #f0f0f0;
+}
+
+.avatar-menu button:active {
+    background: #e0e0e0;
+}
+
+.avatar-menu button:hover {
+    background: #f5f5f5;
+}
+
+.avatar-menu button:first-child {
+    border-bottom: 1px solid #eee;
+}
+
+.profile-pic-input {
+    display: block;
+    width: 100%;
+    padding: 10px 12px;
+    border: 2px dashed #ddd;
+    border-radius: 8px;
+    background: #fafafa;
+    color: #666;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-size: 14px;
+}
+
+.profile-pic-input:hover {
+    border-color: var(--accent-orange);
+    background: #fef7f0;
+    color: var(--accent-orange);
+}
+
+.profile-pic-input:focus {
+    outline: none;
+    border-color: var(--accent-orange);
+    box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.1);
 }
 
 .settings-welcome-text {

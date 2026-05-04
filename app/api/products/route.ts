@@ -5,11 +5,13 @@ type SellerRow = {
   id: string;
   full_name?: string | null;
   business_name?: string | null;
+  profile_pic?: string | null;
 };
 
 type SellerSummary = {
   full_name?: string | null;
   business_name?: string | null;
+  profile_pic?: string | null;
 };
 
 type ProductRow = Record<string, unknown> & {
@@ -28,6 +30,7 @@ function mapProduct(product: ProductRow) {
     ...product,
     seller_name: product.seller?.full_name || null,
     seller_business_name: product.seller?.business_name || null,
+    seller_profile_pic: product.seller?.profile_pic || null,
   };
 }
 
@@ -46,7 +49,7 @@ async function attachSellerSummaries(products: ProductRow[]) {
 
   const { data: sellers, error } = await supabaseAdmin
     .from('users')
-    .select('id, full_name, business_name')
+    .select('id, full_name, business_name, profile_pic')
     .in('id', sellerIds);
 
   if (error) {

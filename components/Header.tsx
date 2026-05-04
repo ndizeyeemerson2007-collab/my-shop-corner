@@ -358,7 +358,13 @@ export default function Header() {
         <nav id="side-menu" className={`side-menu ${isSidebarOpen ? 'active' : ''}`}>
           <div className="side-menu-header">
             <div id="sidebar-user-section" className="user-profile-section">
-              <div className="side-avatar" id="side-avatar">{user?.full_name?.charAt(0).toUpperCase() || user?.email?.charAt(0).toUpperCase() || 'U'}</div>
+              <div className="side-avatar" id="side-avatar">
+                {user?.profile_pic ? (
+                  <img src={resolveProductImagePath(user.profile_pic)} alt="Profile" />
+                ) : (
+                  user?.full_name?.charAt(0).toUpperCase() || user?.email?.charAt(0).toUpperCase() || 'U'
+                )}
+              </div>
               <span className="user-name" id="side-user-name">{user?.full_name || 'My Account'}</span>
             </div>
             <button className="close-side" onClick={closeSidebar}>

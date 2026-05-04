@@ -17,6 +17,7 @@ export type AccountProfile = {
   account_status?: string | null;
   seller_approval_status?: string | null;
   business_name?: string | null;
+  profile_pic?: string | null;
 };
 
 export async function getAuthenticatedAccount(request: NextRequest) {
@@ -40,7 +41,7 @@ export async function getAuthenticatedAccount(request: NextRequest) {
 
   const { data: profile, error: profileError } = await supabaseAdmin
     .from('users')
-    .select('id, email, full_name, phone, address, role, account_status, seller_approval_status, business_name')
+    .select('id, email, full_name, phone, address, role, account_status, seller_approval_status, business_name, profile_pic')
     .eq('id', user.id)
     .maybeSingle();
 

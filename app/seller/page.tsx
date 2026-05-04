@@ -66,6 +66,39 @@ type SellerOrder = {
 
 type OrderFilter = 'all' | 'pending' | 'paid' | 'processing' | 'canceled' | 'delivered';
 
+const DEFAULT_CATEGORIES = [
+  'Clothes',
+  'Shirts',
+  'T-Shirts',
+  'Dresses',
+  'Pants',
+  'Jackets',
+  'Hoodies',
+  'Suits',
+  'Shoes',
+  'Sneakers',
+  'Boots',
+  'Sandals',
+  'Heels',
+  'Hats',
+  'Scarves',
+  'Belts',
+  'Bags',
+  'Sunglasses',
+  'Watches',
+  'Jewelry',
+  'Electronics',
+  'Phones',
+  'Laptops',
+  'Tablets',
+  'Furniture',
+  'Bedding',
+  'Sports & Outdoors',
+  'Gym Equipment',
+  'Beauty & Personal Care',
+  'Books & Media',
+];
+
 const defaultProductForm = {
   name: '',
   description: '',
@@ -114,6 +147,39 @@ function writeSeenNotifications(userId: string, value: Record<string, string>) {
   window.localStorage.setItem(getNotificationSeenKey(userId), JSON.stringify(value));
 }
 
+function getRecentCategoriesKey(userId: string) {
+  return `shopcorner_seller_recent_categories_${userId}`;
+}
+
+function readRecentCategories(userId: string): string[] {
+  if (typeof window === 'undefined') return [];
+  
+  try {
+    const raw = window.localStorage.getItem(getRecentCategoriesKey(userId));
+    if (!raw) return [];
+    
+    const parsed = JSON.parse(raw) as string[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeRecentCategories(userId: string, categories: string[]) {
+  if (typeof window === 'undefined') return;
+  const unique = Array.from(new Set(categories.filter(Boolean))); // Remove duplicates and empty strings
+  window.localStorage.setItem(getRecentCategoriesKey(userId), JSON.stringify(unique));
+}
+
+function addRecentCategory(userId: string, category: string) {
+  if (!category.trim()) return;
+  
+  const recent = readRecentCategories(userId);
+  const filtered = recent.filter((c) => c.toLowerCase() !== category.toLowerCase());
+  const updated = [category, ...filtered].slice(0, 15); // Keep last 15 categories
+  writeRecentCategories(userId, updated);
+}
+
 export default function SellerPage() {
   const confirm = useConfirm();
   const { loading, user: protectedUser, accessBlocked, message } = useProtectedAuth({ requiredRole: 'seller' });
@@ -135,12 +201,21 @@ export default function SellerPage() {
   const [uploading, setUploading] = useState(false);
   const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [savingProfile, setSavingProfile] = useState(false);
-  const [showProfilePanel, setShowProfilePanel] = useState(false);
+  const [savingPassword, setSavingPassword] = useState(false);
+  const [settingsPanel, setSettingsPanel] = useState<'overview' | 'profile' | 'password'>('overview');
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  const [profileForm, setProfileForm] = useState({ full_name: '', phone: '', address: '', business_name: '' });
-  const [profileOriginal, setProfileOriginal] = useState({ full_name: '', phone: '', address: '', business_name: '' });
+  const [profileForm, setProfileForm] = useState({ full_name: '', phone: '', address: '', business_name: '', profile_pic: '' });
+  const [profileOriginal, setProfileOriginal] = useState({ full_name: '', phone: '', address: '', business_name: '', profile_pic: '' });
+  const [profilePicFile, setProfilePicFile] = useState<File | null>(null);
+  const [profilePicPreview, setProfilePicPreview] = useState('');
+  const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '', confirm_password: '' });
   const [form, setForm] = useState(defaultProductForm);
+  const [recentCategories, setRecentCategories] = useState<string[]>([]);
+  const [sellerProductCategories, setSellerProductCategories] = useState<string[]>([]);
+  const [filteredCategories, setFilteredCategories] = useState<string[]>([...DEFAULT_CATEGORIES]);
+  const [showAvatarMenu, setShowAvatarMenu] = useState(false);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const profilePicInputRef = useRef<HTMLInputElement | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -154,11 +229,15 @@ export default function SellerPage() {
       phone: protectedUser.phone || '',
       address: protectedUser.address || '',
       business_name: protectedUser.business_name || '',
+      profile_pic: protectedUser.profile_pic || '',
     };
 
     setUser(protectedUser);
     setProfileForm(mappedProfile);
     setProfileOriginal(mappedProfile);
+    setProfilePicPreview(protectedUser.profile_pic || '');
+    setProfilePicFile(null);
+    setRecentCategories(readRecentCategories(String(protectedUser.id || '')));
 
     void (async () => {
       try {
@@ -181,6 +260,15 @@ export default function SellerPage() {
 
         if (productsResult.success && productsResult.products) {
           setProducts(productsResult.products);
+          // Extract all unique categories from seller's own products
+          const productCategories = Array.from(
+            new Set(
+              productsResult.products
+                .map((p) => p.category)
+                .filter((cat): cat is string => Boolean(cat) && typeof cat === 'string' && cat.trim() !== '')
+            )
+          );
+          setSellerProductCategories(productCategories);
         }
 
         setOrders(ordersResult.success ? (ordersResult.orders || []) : []);
@@ -191,6 +279,13 @@ export default function SellerPage() {
       }
     })();
   }, [accessBlocked, protectedUser]);
+
+  useEffect(() => {
+    // Combine all categories: default + seller's own products + recent
+    const combined = [...DEFAULT_CATEGORIES, ...sellerProductCategories, ...recentCategories];
+    const unique = Array.from(new Set(combined));
+    setFilteredCategories(unique);
+  }, [recentCategories, sellerProductCategories]);
 
   const loadDashboardStats = async () => {
     try {
@@ -215,6 +310,15 @@ export default function SellerPage() {
       const result = await safeFetch<{ success: boolean; products?: Product[] }>('/api/products?seller_scope=mine&limit=50');
       if (result.success && result.products) {
         setProducts(result.products);
+        // Extract all unique categories from seller's own products
+        const productCategories = Array.from(
+          new Set(
+            result.products
+              .map((p) => p.category)
+              .filter((cat): cat is string => Boolean(cat) && typeof cat === 'string' && cat.trim() !== '')
+          )
+        );
+        setSellerProductCategories(productCategories);
       }
     } catch {
       // keep previous
@@ -236,6 +340,8 @@ export default function SellerPage() {
     setForm(defaultProductForm);
     setEditingProduct(null);
     setImageFiles([]);
+    const combined = [...DEFAULT_CATEGORIES, ...sellerProductCategories, ...recentCategories];
+    setFilteredCategories(Array.from(new Set(combined)));
     if (imageInputRef.current) {
       imageInputRef.current.value = '';
     }
@@ -300,7 +406,7 @@ export default function SellerPage() {
 
   const switchSection = async (section: SellerSection) => {
     setActiveSection(section);
-    setShowProfilePanel(false);
+    setSettingsPanel('overview');
     if (section === 'products') await loadProducts();
     if (section === 'orders') {
       setOrderFilter('all');
@@ -313,7 +419,7 @@ export default function SellerPage() {
   };
 
   const switchToSettings = () => {
-    setShowProfilePanel(false);
+    setSettingsPanel('overview');
     setActiveSection('settings');
   };
 
@@ -369,6 +475,10 @@ export default function SellerPage() {
       });
       if (result.success) {
         window.alert(editingProduct ? 'Product updated successfully.' : 'Product saved successfully.');
+        if (form.category && user) {
+          addRecentCategory(String(user.id || ''), form.category);
+          setRecentCategories(readRecentCategories(String(user.id || '')));
+        }
         resetProductForm();
         await Promise.all([loadProducts(), loadDashboardStats()]);
         setActiveSection('products');
@@ -466,21 +576,62 @@ export default function SellerPage() {
     profileForm.full_name !== profileOriginal.full_name ||
     profileForm.phone !== profileOriginal.phone ||
     profileForm.address !== profileOriginal.address ||
-    profileForm.business_name !== profileOriginal.business_name;
+    profileForm.business_name !== profileOriginal.business_name ||
+    Boolean(profilePicFile);
 
   const handleDiscardProfile = () => {
     if (!hasProfileChanges) return;
     if (!window.confirm('Discard unsaved changes?')) return;
     setProfileForm(profileOriginal);
+    setProfilePicPreview(profileOriginal.profile_pic || '');
+    setProfilePicFile(null);
+  };
+
+  const handleProfilePicChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      window.alert('Please select a valid image file.');
+      return;
+    }
+    setProfilePicFile(file);
+    setProfilePicPreview(URL.createObjectURL(file));
   };
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     setSavingProfile(true);
     try {
+      let profilePicUrl = profileForm.profile_pic;
+
+      if (profilePicFile) {
+        const uploadData = new FormData();
+        uploadData.append('files', profilePicFile);
+
+        const uploadResult = await safeFetch<{ success: boolean; paths?: string[]; message?: string }>('/api/upload', {
+          method: 'POST',
+          body: uploadData,
+        });
+
+        if (!uploadResult.success || !Array.isArray(uploadResult.paths) || uploadResult.paths.length === 0) {
+          window.alert(uploadResult.message || 'Could not upload profile picture.');
+          return;
+        }
+
+        profilePicUrl = uploadResult.paths[0];
+      }
+
+      const payload = {
+        full_name: profileForm.full_name,
+        phone: profileForm.phone,
+        address: profileForm.address,
+        business_name: profileForm.business_name,
+        profile_pic: profilePicUrl,
+      };
+
       const result = await safeFetch<{ success: boolean; user?: User; message?: string }>('/api/profile', {
         method: 'PATCH',
-        body: JSON.stringify(profileForm),
+        body: JSON.stringify(payload),
       });
       if (result.success && result.user) {
         setUser(result.user);
@@ -489,13 +640,16 @@ export default function SellerPage() {
           phone: result.user.phone || '',
           address: result.user.address || '',
           business_name: result.user.business_name || '',
+          profile_pic: result.user.profile_pic || '',
         };
         setProfileForm(next);
         setProfileOriginal(next);
+        setProfilePicPreview(result.user.profile_pic || '');
+        setProfilePicFile(null);
         localStorage.setItem('shopcorner_user', JSON.stringify(result.user));
         window.dispatchEvent(new CustomEvent('userLogin'));
         window.alert('Profile updated successfully.');
-        setShowProfilePanel(false);
+        setSettingsPanel('overview');
       } else {
         window.alert(result.message || 'Failed to update profile.');
       }
@@ -503,6 +657,28 @@ export default function SellerPage() {
       window.alert(getErrorMessage(error, 'Could not save changes.'));
     } finally {
       setSavingProfile(false);
+    }
+  };
+
+  const handleSavePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingPassword(true);
+    try {
+      const result = await safeFetch<{ success: boolean; message?: string }>('/api/profile/password', {
+        method: 'PATCH',
+        body: JSON.stringify(passwordForm),
+      });
+      if (result.success) {
+        setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
+        window.alert(result.message || 'Password updated successfully.');
+        setSettingsPanel('overview');
+      } else {
+        window.alert(result.message || 'Failed to update password.');
+      }
+    } catch (error: unknown) {
+      window.alert(getErrorMessage(error, 'Could not update password.'));
+    } finally {
+      setSavingPassword(false);
     }
   };
 
@@ -784,7 +960,28 @@ export default function SellerPage() {
           </div>
 
           <label className="adm-label">Category</label>
-          <input className="adm-input" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
+          <input
+            className="adm-input"
+            list="categories-list"
+            value={form.category}
+            onChange={(e) => {
+              const value = e.target.value;
+              setForm({ ...form, category: value });
+              // Filter categories based on input
+              const combined = [...DEFAULT_CATEGORIES, ...sellerProductCategories, ...recentCategories];
+              const unique = Array.from(new Set(combined));
+              const filtered = unique.filter((cat) =>
+                cat.toLowerCase().includes(value.toLowerCase())
+              );
+              setFilteredCategories(filtered.length > 0 ? filtered : unique);
+            }}
+            placeholder="Select or type a category"
+          />
+          <datalist id="categories-list">
+            {filteredCategories.map((cat) => (
+              <option key={cat} value={cat} />
+            ))}
+          </datalist>
 
           <label className="adm-label">Product Images</label>
           <input
@@ -1036,11 +1233,49 @@ export default function SellerPage() {
         <div className="settings-top-card admin-card">
               <div className="settings-profile">
                 <div className="settings-avatar">
-              <span>{(user.business_name?.charAt(0) || user.full_name?.charAt(0) || user.email?.charAt(0) || 'A').toUpperCase()}</span>
-              <button type="button" className="avatar-edit-btn" onClick={() => setShowProfilePanel(true)}>
-                <i className="fa-solid fa-pen"></i>
-              </button>
+              {profilePicPreview ? (
+                <img src={profilePicPreview} alt="Profile" />
+              ) : user.profile_pic ? (
+                <img src={resolveProductImagePath(user.profile_pic)} alt="Profile" />
+              ) : (
+                <span>{(user.business_name?.charAt(0) || user.full_name?.charAt(0) || user.email?.charAt(0) || 'A').toUpperCase()}</span>
+              )}
             </div>
+            {(profilePicPreview || user.profile_pic) && (
+              <div className="avatar-edit-container">
+                <button className="avatar-edit-btn-small" onClick={() => setShowAvatarMenu(!showAvatarMenu)}>
+                  <i className="fa-solid fa-pen"></i>
+                </button>
+                {showAvatarMenu && (
+                  <div className="avatar-menu">
+                    <button onClick={() => { profilePicInputRef.current?.click(); setShowAvatarMenu(false); }}>Change Picture</button>
+                    <button onClick={async () => {
+                      setShowAvatarMenu(false);
+                      setProfilePicPreview('');
+                      setProfilePicFile(null);
+                      setProfileForm(prev => ({ ...prev, profile_pic: '' }));
+                      try {
+                        const result = await safeFetch<{ success: boolean; user?: User; message?: string }>('/api/profile', {
+                          method: 'PATCH',
+                          body: JSON.stringify({ profile_pic: '' }),
+                        });
+                        if (result.success && result.user) {
+                          setUser(result.user);
+                          setProfileForm(prev => ({ ...prev, profile_pic: '' }));
+                          setProfileOriginal(prev => ({ ...prev, profile_pic: '' }));
+                          localStorage.setItem('shopcorner_user', JSON.stringify(result.user));
+                          window.dispatchEvent(new CustomEvent('userLogin'));
+                        } else {
+                          window.alert(result.message || 'Failed to remove profile picture.');
+                        }
+                      } catch (error: unknown) {
+                        window.alert(getErrorMessage(error, 'Could not remove profile picture.'));
+                      }
+                    }}>Remove Picture</button>
+                  </div>
+                )}
+              </div>
+            )}
             <div>
               <p className="settings-welcome-text">Welcome back</p>
               <h3>{user.business_name || user.full_name || 'Seller'}</h3>
@@ -1052,11 +1287,11 @@ export default function SellerPage() {
           </button>
         </div>
 
-        {!showProfilePanel ? (
+        {settingsPanel === 'overview' ? (
           <>
             <div id="settings-overview" className="settings-overview">
               <div className="settings-grid">
-                <button type="button" className="settings-tile" onClick={() => setShowProfilePanel(true)}>
+                <button type="button" className="settings-tile" onClick={() => setSettingsPanel('profile')}>
                   <span className="settings-tile-icon"><i className="fa-solid fa-store"></i></span>
                   <div className="tile-text">
                     <strong>Seller Profile</strong>
@@ -1064,7 +1299,7 @@ export default function SellerPage() {
                   </div>
                   <i className="fa-solid fa-chevron-right settings-chevron"></i>
                 </button>
-                <button type="button" className="settings-tile" onClick={() => window.alert('Password change is not wired up here yet.')}>
+                <button type="button" className="settings-tile" onClick={() => setSettingsPanel('password')}>
                   <span className="settings-tile-icon"><i className="fa-solid fa-lock"></i></span>
                   <div className="tile-text">
                     <strong>Change Password</strong>
@@ -1103,19 +1338,31 @@ export default function SellerPage() {
               </div>
             </div>
           </>
-        ) : (
+        ) : settingsPanel === 'profile' ? (
           <div id="settings-profile-panel" className="settings-profile-panel">
             <header>
               <div>
                 <h4>Seller Profile</h4>
                 <p>Edit your business details</p>
               </div>
-              <button type="button" className="logout-btn" onClick={() => setShowProfilePanel(false)} aria-label="Close">
+              <button type="button" className="logout-btn" onClick={() => setSettingsPanel('overview')} aria-label="Close">
                 <i className="fa-solid fa-xmark"></i>
               </button>
             </header>
 
             <form onSubmit={handleSaveProfile}>
+              <label className="adm-label">Profile Picture</label>
+              <div className="profile-picture-row">
+                {profilePicPreview ? (
+                  <img src={profilePicPreview} alt="Profile preview" className="profile-picture-preview" />
+                ) : user.profile_pic ? (
+                  <img src={resolveProductImagePath(user.profile_pic)} alt="Current profile" className="profile-picture-preview" />
+                ) : (
+                  <div className="profile-picture-placeholder">No image</div>
+                )}
+                <input type="file" accept="image/*" onChange={handleProfilePicChange} ref={profilePicInputRef} className="profile-pic-input" />
+              </div>
+
               <label className="adm-label">Business Name</label>
               <input
                 type="text"
@@ -1165,6 +1412,58 @@ export default function SellerPage() {
                   {savingProfile ? (
                     <LoadingDots label="Loading" size="sm" className="dot-loader--inverse dot-loader--button" />
                   ) : 'Save'}
+                </button>
+              </div>
+            </form>
+          </div>
+        ) : (
+          <div id="settings-password-panel" className="settings-profile-panel">
+            <header>
+              <div>
+                <h4>Change Password</h4>
+                <p>Update your account password securely</p>
+              </div>
+              <button type="button" className="logout-btn" onClick={() => setSettingsPanel('overview')} aria-label="Close">
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </header>
+
+            <form onSubmit={handleSavePassword}>
+              <label className="adm-label">Current Password</label>
+              <input
+                type="password"
+                className="adm-input"
+                value={passwordForm.current_password}
+                onChange={(e) => setPasswordForm({ ...passwordForm, current_password: e.target.value })}
+                placeholder="Enter current password"
+              />
+
+              <label className="adm-label">New Password</label>
+              <input
+                type="password"
+                className="adm-input"
+                value={passwordForm.new_password}
+                onChange={(e) => setPasswordForm({ ...passwordForm, new_password: e.target.value })}
+                placeholder="Enter new password"
+              />
+
+              <label className="adm-label">Confirm Password</label>
+              <input
+                type="password"
+                className="adm-input"
+                value={passwordForm.confirm_password}
+                onChange={(e) => setPasswordForm({ ...passwordForm, confirm_password: e.target.value })}
+                placeholder="Confirm new password"
+              />
+
+              <div className="settings-form-actions">
+                <button type="button" className="settings-secondary-btn" onClick={() => setSettingsPanel('overview')}>
+                  Cancel
+                </button>
+                <button type="submit" className="adm-btn" disabled={savingPassword}>
+                  {savingPassword ? (
+                    <LoadingDots label="Loading" size="sm" className="dot-loader--inverse dot-loader--button" />
+                  ) : 'Save Password'}
                 </button>
               </div>
             </form>

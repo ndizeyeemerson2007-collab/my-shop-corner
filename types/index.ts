@@ -16,6 +16,8 @@ export interface Product {
   seller_id?: string;
   seller_name?: string;
   seller_business_name?: string;
+  seller_profile_pic?: string;
+  views?: number;
   seller?: {
     id?: string;
     full_name?: string | null;
@@ -44,6 +46,7 @@ export interface User {
   account_status?: string;
   seller_approval_status?: string;
   business_name?: string;
+  profile_pic?: string;
   email_confirmed_at?: string | null;
 }
 

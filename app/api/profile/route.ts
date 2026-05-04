@@ -36,6 +36,7 @@ export async function PATCH(req: NextRequest) {
     const phone = (body.phone || '').trim();
     const address = (body.address || '').trim();
     const business_name = (body.business_name || '').trim();
+    const profile_pic = (body.profile_pic || '').trim();
 
     if (full_name.length > 100) {
       return NextResponse.json({ success: false, message: 'Full name must be 100 characters or less' }, { status: 400 });
@@ -46,15 +47,24 @@ export async function PATCH(req: NextRequest) {
     if (business_name.length > 120) {
       return NextResponse.json({ success: false, message: 'Business name must be 120 characters or less' }, { status: 400 });
     }
+    if (profile_pic.length > 255) {
+      return NextResponse.json({ success: false, message: 'Profile image URL is too long' }, { status: 400 });
+    }
+
+    const updates: Record<string, unknown> = {
+      full_name,
+      phone,
+      address,
+      ...(auth.profile.role === 'seller' ? { business_name } : {}),
+    };
+
+    if (profile_pic) {
+      updates.profile_pic = profile_pic;
+    }
 
     const { data, error } = await supabaseAdmin
       .from('users')
-      .update({
-        full_name,
-        phone,
-        address,
-        ...(auth.profile.role === 'seller' ? { business_name } : {}),
-      })
+      .update(updates)
       .eq('id', auth.profile.id)
       .select('*')
       .single();

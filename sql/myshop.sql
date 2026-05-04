@@ -61,6 +61,7 @@ CREATE TABLE public.products (
   badge character varying,
   sold integer DEFAULT 0,
   stock integer DEFAULT 100,
+  views integer DEFAULT 0,
   created_at timestamp with time zone DEFAULT now(),
   is_trend boolean DEFAULT false,
   images jsonb,
@@ -76,6 +77,15 @@ CREATE TABLE public.reviews (
   created_at timestamp with time zone DEFAULT now(),
   CONSTRAINT reviews_pkey PRIMARY KEY (id),
   CONSTRAINT reviews_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id)
+);
+CREATE TABLE public.seller_follows (
+  id bigint NOT NULL DEFAULT nextval('seller_follows_id_seq'::regclass),
+  user_id uuid NOT NULL,
+  seller_id uuid NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT seller_follows_pkey PRIMARY KEY (id),
+  CONSTRAINT seller_follows_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id),
+  CONSTRAINT seller_follows_seller_id_fkey FOREIGN KEY (seller_id) REFERENCES public.users(id)
 );
 CREATE TABLE public.seller_order_statuses (
   id bigint NOT NULL DEFAULT nextval('seller_order_statuses_id_seq'::regclass),

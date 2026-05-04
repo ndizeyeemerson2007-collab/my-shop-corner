@@ -48,6 +48,9 @@ export default function Home() {
   const [selectedColor, setSelectedColor] = useState('');
   const [selectedSize, setSelectedSize] = useState('');
   const [selectedQty, setSelectedQty] = useState('1');
+  const [upVotes, setUpVotes] = useState(0);
+  const [downVotes, setDownVotes] = useState(0);
+  const [userVote, setUserVote] = useState(0);
   const [detailImageIndex, setDetailImageIndex] = useState(0);
   const [productImageIndices, setProductImageIndices] = useState<Record<number, number>>({});
   const productTouchStartX = useRef<number | null>(null);
@@ -174,6 +177,16 @@ export default function Home() {
     return () => {
       document.body.style.overflow = previousOverflow;
     };
+  }, [selectedProduct]);
+
+  useEffect(() => {
+    if (selectedProduct) {
+      fetchVotes();
+    } else {
+      setUpVotes(0);
+      setDownVotes(0);
+      setUserVote(0);
+    }
   }, [selectedProduct]);
 
   useEffect(() => {
@@ -335,6 +348,16 @@ export default function Home() {
     setLoadingDetails(true);
     setRelatedProducts([]);
     setProductReviews([]);
+
+    // Increment view count
+    try {
+      await safeFetch(`/api/products/${product.id}/views`, {
+        method: 'POST',
+      });
+    } catch (error) {
+      console.warn('Failed to increment view count', error);
+    }
+
     try {
       // Fetch related products
       const relatedRes = await safeFetch<{ success: boolean; products: Product[] }>(`/api/products?limit=4&category=${product.category || ''}`);
@@ -355,6 +378,47 @@ export default function Home() {
   };
 
   const closeProductDetail = () => setSelectedProduct(null);
+
+  const fetchVotes = async () => {
+    if (!selectedProduct) return;
+    try {
+      const result = await safeFetch<{ upVotes: number; downVotes: number; userVote: number }>(`/api/products/${selectedProduct.id}/vote`);
+      if (result) {
+        setUpVotes(result.upVotes);
+        setDownVotes(result.downVotes);
+        setUserVote(result.userVote);
+      }
+    } catch (error) {
+      console.error('Failed to fetch votes:', error);
+    }
+  };
+
+  const handleVote = async (vote: 1 | -1) => {
+    if (!selectedProduct) return;
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      alert('Please log in to vote');
+      return;
+    }
+
+    try {
+      const result = await safeFetch<{ upVotes: number; downVotes: number; userVote: number }>(`/api/products/${selectedProduct.id}/vote`, {
+        method: 'POST',
+        body: JSON.stringify({ vote }),
+      });
+      if (result) {
+        setUpVotes(result.upVotes);
+        setDownVotes(result.downVotes);
+        setUserVote(result.userVote);
+      } else {
+        alert('Please log in to vote');
+      }
+    } catch (error) {
+      console.error('Failed to vote:', error);
+      alert('Failed to vote');
+    }
+  };
 
   const removeFromCart = async (cartId: number) => {
     const confirmed = await confirm({
@@ -646,11 +710,17 @@ export default function Home() {
           <p className="title">{product.name}</p>
           {product.seller_business_name ? <p className="seller-label">By {product.seller_business_name}</p> : null}
           {product.badge && <p className="badge">{product.badge}</p>}
-          <p className="price">
-            RWF<span className="big-price">{Number(product.price).toFixed(2)}</span>
-            {product.original_price && <span className="original-price">RWF{Number(product.original_price).toFixed(2)}</span>}
-            <span className="sold">{product.sold || 0}+ sold</span>
-          </p>
+          <div className="product-footer">
+            <p className="price">
+              RWF<span className="big-price">{Number(product.price).toFixed(2)}</span>
+              {product.original_price && <span className="original-price">RWF{Number(product.original_price).toFixed(2)}</span>}
+              <span className="sold">{product.sold || 0}+ sold</span>
+            </p>
+            <div className="product-views">
+              <i className="fa-solid fa-eye"></i>
+              <span>{product.views || 0}</span>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -974,12 +1044,27 @@ export default function Home() {
                     <span>Sold: {selectedProduct.sold || 0}+</span>
                   </div>
 
+                  <div className="detail-votes">
+                    <button type="button" className={`vote-btn vote-up ${userVote === 1 ? 'active' : ''}`} onClick={() => handleVote(1)}>
+                      <i className="fa-solid fa-thumbs-up"></i>
+                      <span>{upVotes}</span>
+                    </button>
+                    <button type="button" className={`vote-btn vote-down ${userVote === -1 ? 'active' : ''}`} onClick={() => handleVote(-1)}>
+                      <i className="fa-solid fa-thumbs-down"></i>
+                      <span>{downVotes}</span>
+                    </button>
+                  </div>
+
                   {selectedProduct.seller_id ? (
                     <div className="detail-seller-card">
                       <div className="detail-seller-header">Seller Highlight</div>
                       <div className="detail-seller-main">
                         <div className="detail-seller-logo">
-                          {(selectedProduct.seller_business_name || selectedProduct.seller_name || 'S').charAt(0).toUpperCase()}
+                          {selectedProduct.seller_profile_pic ? (
+                            <img src={resolveProductImagePath(selectedProduct.seller_profile_pic)} alt="Seller" />
+                          ) : (
+                            (selectedProduct.seller_business_name || selectedProduct.seller_name || 'S').charAt(0).toUpperCase()
+                          )}
                         </div>
                         <div className="detail-seller-copy">
                           <strong>{selectedProduct.seller_business_name || selectedProduct.seller_name || 'Seller'}</strong>
