@@ -416,15 +416,7 @@ export default function Header() {
             </div>
 
             <div className="search-panel-body">
-              <div className="search-panel-copy">
-                <p className="search-panel-eyebrow">{searchQuery.trim() ? 'Best matches' : 'Discover faster'}</p>
-                <h3>{searchQuery.trim() ? `Results for "${searchQuery}"` : 'Trending now in ShopCorner'}</h3>
-                <span>
-                  {searchQuery.trim()
-                    ? 'Type anything and the most likely product names rise to the top.'
-                    : 'Start typing to search across all products, or tap a trending product below.'}
-                </span>
-              </div>
+              
 
               <div className="search-suggestion-list">
                 {loadingSearch ? (

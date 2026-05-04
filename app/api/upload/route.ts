@@ -1,43 +1,10 @@
-import { mkdir, access, writeFile } from 'fs/promises';
-import path from 'path';
-import { constants as fsConstants } from 'fs';
 import { NextRequest, NextResponse } from 'next/server';
-import { forbiddenResponse, getAuthenticatedAccount, hasRole } from '../../../lib/server-auth';
+import { forbiddenResponse, getAuthenticatedAccount, hasRole, supabaseAdmin } from '../../../lib/server-auth';
+import crypto from 'crypto';
 
 export const runtime = 'nodejs';
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
-const uploadDirectory = path.join(process.cwd(), 'public', 'upload');
-
-function sanitizeFileName(fileName: string) {
-  const extension = path.extname(fileName).toLowerCase();
-  const baseName = path.basename(fileName, extension);
-  const normalizedBaseName = baseName
-    .toLowerCase()
-    .replace(/[^a-z0-9-_]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80) || 'image';
-
-  const normalizedExtension = extension.replace(/[^a-z0-9.]/g, '') || '.jpg';
-  return `${normalizedBaseName}${normalizedExtension}`;
-}
-
-async function resolveAvailableFileName(initialFileName: string) {
-  let fileName = initialFileName;
-  let counter = 1;
-
-  while (true) {
-    try {
-      await access(path.join(uploadDirectory, fileName), fsConstants.F_OK);
-      const extension = path.extname(initialFileName);
-      const baseName = path.basename(initialFileName, extension);
-      fileName = `${baseName}-${counter}${extension}`;
-      counter += 1;
-    } catch {
-      return fileName;
-    }
-  }
-}
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Internal Server Error';
@@ -58,8 +25,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, message: 'Please select at least one image.' }, { status: 400 });
     }
 
-    await mkdir(uploadDirectory, { recursive: true });
-
     const storedPaths: string[] = [];
 
     for (const file of files) {
@@ -71,13 +36,26 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, message: `Image "${file.name}" is larger than 10MB.` }, { status: 400 });
       }
 
-      const sanitizedName = sanitizeFileName(file.name || 'image.jpg');
-      const finalFileName = await resolveAvailableFileName(sanitizedName);
-      const filePath = path.join(uploadDirectory, finalFileName);
-      const fileBuffer = Buffer.from(await file.arrayBuffer());
+      const extension = file.name ? file.name.split('.').pop()?.toLowerCase() || 'jpg' : 'jpg';
+      const finalFileName = `${crypto.randomUUID()}.${extension}`;
+      const fileBuffer = await file.arrayBuffer();
 
-      await writeFile(filePath, fileBuffer);
-      storedPaths.push(`upload/${finalFileName}`);
+      const { data, error } = await supabaseAdmin.storage
+        .from('products')
+        .upload(finalFileName, fileBuffer, {
+          contentType: file.type,
+          upsert: true,
+        });
+
+      if (error) {
+        return NextResponse.json({ success: false, message: error.message }, { status: 500 });
+      }
+
+      const { data: publicUrlData } = supabaseAdmin.storage
+        .from('products')
+        .getPublicUrl(data.path);
+
+      storedPaths.push(publicUrlData.publicUrl);
     }
 
     return NextResponse.json({ success: true, paths: storedPaths });

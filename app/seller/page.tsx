@@ -384,7 +384,14 @@ export default function SellerPage() {
 
   const handleImageSelection = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    setImageFiles(files);
+    setImageFiles((prev) => [...prev, ...files]);
+    if (imageInputRef.current) {
+      imageInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveImageFile = (index: number) => {
+    setImageFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
   const handleEditProduct = (product: Product) => {
@@ -773,7 +780,6 @@ export default function SellerPage() {
             type="file"
             accept="image/*"
             multiple
-            required={!editingProduct}
             className="adm-input"
             onChange={handleImageSelection}
           />
@@ -786,18 +792,31 @@ export default function SellerPage() {
             <div className="admin-upload-list">
               {getProductImages(editingProduct).map((imagePath, index) => (
                 <div key={`${imagePath}-${index}`} className="admin-upload-item">
-                  <span>Current image {index + 1}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <div style={{ width: '40px', height: '40px', position: 'relative', borderRadius: '4px', overflow: 'hidden' }}>
+                      <Image src={resolveProductImagePath(imagePath)} alt="Product image" fill style={{ objectFit: 'cover' }} unoptimized />
+                    </div>
+                    <span>Current image {index + 1}</span>
+                  </div>
                   {index === 0 ? <strong>Main image</strong> : <small>Gallery image</small>}
                 </div>
               ))}
             </div>
           ) : null}
           {imageFiles.length > 0 ? (
-            <div className="admin-upload-list">
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '15px', marginBottom: '15px' }}>
               {imageFiles.map((file, index) => (
-                <div key={`${file.name}-${index}`} className="admin-upload-item">
-                  <span>{file.name}</span>
-                  {index === 0 ? <strong>Main image</strong> : <small>Extra image</small>}
+                <div key={`${file.name}-${index}`} style={{ position: 'relative', width: '80px', height: '80px', border: '1px solid #ddd', borderRadius: '6px', overflow: 'hidden' }}>
+                  <img src={URL.createObjectURL(file)} alt={file.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <button 
+                    type="button" 
+                    onClick={() => handleRemoveImageFile(index)}
+                    title="Remove image"
+                    style={{ position: 'absolute', top: 0, right: 0, background: 'rgba(255, 0, 0, 0.8)', color: 'white', border: 'none', borderBottomLeftRadius: '4px', cursor: 'pointer', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 'bold' }}
+                  >
+                    ×
+                  </button>
+                  {index === 0 && <span style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(0,0,0,0.6)', color: 'white', fontSize: '10px', textAlign: 'center', padding: '2px 0' }}>Main</span>}
                 </div>
               ))}
             </div>
