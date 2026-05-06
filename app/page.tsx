@@ -1095,7 +1095,8 @@ export default function Home() {
                             </button>
                             <div className="detail-seller-badge">
                               <i className="fa-solid fa-circle-check" aria-hidden="true" />
-                              <span>Verified Seller</span>                            </div>
+                              <span>Verified Seller</span>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -1259,9 +1260,95 @@ export default function Home() {
                 </div>
               )}
             </div>
+
+            <aside className="detail-cart-panel">
+              <div className="detail-cart-panel-inner">
+                <div className="cart-panel-title">
+                  <div>
+                    <h2>Your Cart</h2>
+                    <p>{cartItems.length} item{cartItems.length === 1 ? '' : 's'}</p>
+                  </div>
+                </div>
+                <div className="cart-items-panel">
+                  {cartItems.length > 0 ? cartItems.map((item) => (
+                    <div className="cart-panel-item" key={item.cart_id}>
+                      {resolveProductImagePath(item.image) ? (
+                        <img src={resolveProductImagePath(item.image)} alt={item.name} />
+                      ) : (
+                        <div className="cart-panel-item-image" />
+                      )}
+                      <div className="cart-panel-item-meta">
+                        <strong>{item.name}</strong>
+                        <span>Qty: {item.quantity}</span>
+                        <span>RWF {Number(item.price).toFixed(2)}</span>
+                      </div>
+                      <button type="button" className="remove-from-cart" title="Remove" onClick={() => removeFromCart(item.cart_id)}>
+                        <i className="fa-solid fa-trash"></i>
+                      </button>
+                    </div>
+                  )) : (
+                    <div className="empty-cart-panel">Your cart is empty</div>
+                  )}
+                </div>
+
+                <div className="cart-summary-panel">
+                  <div className="cart-summary-row">
+                    <span>Subtotal</span>
+                    <strong>RWF {Number(cartTotal).toLocaleString()}</strong>
+                  </div>
+                  <div className="cart-summary-row">
+                    <span>Delivery</span>
+                    <strong>{deliveryQuote ? `RWF ${Number(deliveryQuote.deliveryFee).toLocaleString()}` : 'Pending'}</strong>
+                  </div>
+                  <div className="cart-summary-row total">
+                    <span>Total</span>
+                    <strong>RWF {Number(orderGrandTotal).toLocaleString()}</strong>
+                  </div>
+                </div>
+
+                <button
+                  id="place-order-btn"
+                  className="checkout-btn"
+                  disabled={cartItems.length === 0 || placingOrder}
+                  onClick={placeOrder}
+                >
+                  {placingOrder ? (
+                    <LoadingDots label="Loading" size="sm" className="dot-loader--inverse dot-loader--button" />
+                  ) : 'Place Order'}
+                </button>
+              </div>
+            </aside>
           </div>
         </div>
       )}
+
+      <footer className="site-footer">
+        <div className="footer-grid">
+          <div className="footer-column">
+            <h3>ShopCorner</h3>
+            <p>Your one-stop marketplace for trending products in Rwanda. Discover, shop, and enjoy fast delivery with trusted sellers.</p>
+          </div>
+          <div className="footer-column">
+            <h3>Quick Links</h3>
+            <ul>
+              <li><a href="/">Home</a></li>
+              <li><a href="/trend">Trend</a></li>
+              <li><a href="/contact">Contact</a></li>
+              <li><a href="/help">Help</a></li>
+            </ul>
+          </div>
+          <div className="footer-column">
+            <h3>Contact</h3>
+            <p>Email: <a href="mailto:support@shopcorner.rw">support@shopcorner.rw</a></p>
+            <p>Phone: <a href="tel:+250788123456">+250 788 123 456</a></p>
+            <p>Address: Kigali, Rwanda</p>
+            <p>Hours: Mon - Fri, 9:00 AM - 6:00 PM</p>
+          </div>
+        </div>
+        <div className="footer-bottom">
+          <p>© {new Date().getFullYear()} ShopCorner. All rights reserved.</p>
+        </div>
+      </footer>
     </>
   );
 }
