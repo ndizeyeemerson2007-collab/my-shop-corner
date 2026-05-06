@@ -1259,6 +1259,30 @@ export default function Home() {
                   </div>
                 </div>
               )}
+
+              <div className="detail-modal-footer">
+                <div className="detail-footer-grid">
+                  <div className="detail-footer-column">
+                    <h3>ShopCorner</h3>
+                    <p>Discover trending products in Rwanda with fast delivery, trusted sellers, and easy checkout.</p>
+                  </div>
+                  <div className="detail-footer-column">
+                    <h3>Quick Links</h3>
+                    <ul>
+                      <li><a href="/">Home</a></li>
+                      <li><a href="/trend">Trend</a></li>
+                      <li><a href="/contact">Contact</a></li>
+                      <li><a href="/help">Help</a></li>
+                    </ul>
+                  </div>
+                  <div className="detail-footer-column">
+                    <h3>Contact</h3>
+                    <p>Email: <a href="mailto:support@shopcorner.rw">support@shopcorner.rw</a></p>
+                    <p>Phone: <a href="tel:+250788123456">+250 788 123 456</a></p>
+                    <p>Address: Kigali, Rwanda</p>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <aside className="detail-cart-panel">
